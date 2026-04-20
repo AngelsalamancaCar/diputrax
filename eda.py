@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from io import StringIO
 
-DB_DIR = Path("data/database/raw")
+DB_DIR = Path("data/database/clean")
 REPORTS_DIR = Path("reports/eda")
 
 
