@@ -232,9 +232,9 @@ def main():
             SUM(presidente_comision)                         AS total_presidentes,
             SUM(lider_comision)                              AS total_lideres,
             ROUND(AVG(n_comisiones), 2)                     AS avg_comisiones,
-            ROUND(AVG(n_comisiones_nodales), 2)             AS avg_nodales,
-            ROUND(AVG(n_comisiones_lastre), 2)              AS avg_lastre,
-            ROUND(AVG(n_comisiones_tematicos), 2)           AS avg_tematicos
+            ROUND(AVG(n_comisiones_especiales), 2)          AS avg_especiales,
+            ROUND(AVG(n_presidencias), 2)                   AS avg_presidencias,
+            ROUND(AVG(n_secretarias), 2)                    AS avg_secretarias
         FROM '{path}'
     """).fetchdf()
     table(comm)
