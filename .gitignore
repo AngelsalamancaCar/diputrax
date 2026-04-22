@@ -40,3 +40,7 @@ Thumbs.db
 
 # Intermediate reports
 *.md
+
+# reports
+reports/
+*.md
