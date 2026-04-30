@@ -1,99 +1,158 @@
 # diputrax
 
-Analysis of legislative committee recruitment patterns in Mexico's Chamber of Deputies (Cámara de Diputados, H. Congreso de la Unión), legislatures LVII–LXVI (1997–present).
+Análisis de patrones de reclutamiento para comisiones legislativas de la Cámara de Diputados del Congreso de la Unión de México, legislaturas LVII–LXVI (1997–presente).
 
-**Research question:** Does a deputy's biographical, educational, and career-trajectory profile predict what type of committee they're assigned to — and has that profile changed across political eras?
+**Pregunta de investigación:** ¿El perfil biográfico, educativo y de trayectoria de un diputado federal predice el tipo de comisión al que es asignado — y ese perfil ha cambiado entre épocas políticas?
 
-## Quickstart
+## Inicio rápido
 
 ```bash
-make setup    # create .venv, install deps, register Jupyter kernel
-make notebook # open JupyterLab
+make setup    # crea .venv, instala dependencias, registra kernel de Jupyter
+make notebook # abre JupyterLab
 ```
 
-To run headless (re-execute all cells in place):
+Para ejecutar sin interfaz (re-ejecuta todas las celdas en lugar):
 
 ```bash
 make run
 ```
 
-## Dependencies
+## Dependencias
 
-| Package | Purpose |
-|---------|---------|
-| pandas | data loading and wrangling |
-| numpy | numeric ops |
-| matplotlib | base plotting |
-| seaborn | statistical charts |
-| scikit-learn | preprocessing, cross-validation |
-| xgboost | gradient boosting classifier / regressor |
-| shap | SHAP feature importance |
-| statsmodels | Poisson regression |
-| scipy | statistical tests |
-| jupyterlab | notebook interface |
-| ipykernel | kernel registration |
+| Paquete | Uso |
+|---------|-----|
+| pandas | carga y manipulación de datos |
+| numpy | operaciones numéricas |
+| matplotlib | gráficas base |
+| seaborn | gráficas estadísticas |
+| scikit-learn | preprocesamiento, validación cruzada |
+| xgboost | clasificador/regresor gradient boosting |
+| shap | importancia de features (valores SHAP) |
+| statsmodels | regresión Poisson |
+| scipy | pruebas estadísticas |
+| jupyterlab | interfaz de notebook |
+| ipykernel | registro del kernel |
 
-## Data source
+## Fuente de datos
 
-Notebook reads a cleaned parquet file produced by the [legisdatamxsil](../legisdatamxsil) ETL pipeline:
+El notebook lee un archivo parquet limpio producido por el ETL [legisdatamxsil](../legisdatamxsil), que extrae perfiles públicos del Sistema de Información Legislativa (SIL) de la Secretaría de Gobernación:
 
 ```
 data/database/clean/diputados_YYYYMMDD_HHMMSS.parquet
 ```
 
-One row per deputy-legislature. Run the ETL pipeline in `legisdatamxsil` before executing this notebook.
+Una fila por diputado-legislatura (~5,000 registros totales). Ejecutar el ETL antes de correr este notebook.
 
-## Political eras
+**Calidad de datos relevante:**
+- `edad_al_tomar_cargo` y `y_nacimiento`: 10.2% nulos (imputados por media de legislatura)
+- `distrito_circ`: 4.2% nulos
+- `grado_estudios_ord` en legislatura LIX: promedio anómalo (1.49 vs ~4 en otras) — posible error de captura
+- 625 registros son reelecciones válidas entre legislaturas distintas
 
-| Era | Dominant party | Legislatures |
-|-----|---------------|--------------|
-| ERA_1 | PRI | LVII–LIX |
-| ERA_2 | PAN | LX–LXII |
-| ERA_3 | Transition | LXIII–LXIV |
-| ERA_4 | Morena | LXV–LXVI |
+## Épocas políticas
 
-## Committee typology
+| Época | Partido dominante | Legislaturas | Periodo | n |
+|-------|-------------------|--------------|---------|---|
+| ERA_1 | PRI | LVII–LIX | 1997–2006 | ~1,500 |
+| ERA_2 | PAN | LX–LXII | 2006–2015 | ~1,500 |
+| ERA_3 | Transición | LXIII–LXV | 2015–2021 | ~1,500 |
+| ERA_4 | Morena | LXVI | 2021–presente | ~500 |
 
-| Type | Operational definition | Political implication |
+## Tipología de comisiones
+
+| Tipo | Definición operacional | Implicación política |
 |------|----------------------|----------------------|
-| **Nodal** | ≥1 nodal commission (presupuesto, hacienda, seguridad) | High influence — majority-party trust assignment |
-| **Lastre** | ≥1 lastre commission (no resources, no dictámenes) | Marginalization — opposition or intra-party sanction |
-| **Temáticas** | Count of thematic commissions (0–10) | Distributed by negotiation — not structurally predicted |
+| **Nodal** | ≥1 comisión nodal (presupuesto, hacienda, seguridad) | Alta influencia — cargo de confianza del partido mayoritario |
+| **Lastre** | ≥1 comisión lastre (sin recursos ni dictámenes) | Marginación — oposición o sanción intra-partido |
+| **Temáticas** | Conteo de comisiones temáticas (0–10) | Distribución negociada — no estructuralmente predecible |
 
-## Notebook structure
+## Estructura del notebook
 
-| Section | Description |
+| Sección | Descripción |
 |---------|-------------|
-| 1 | Executive summary — context, objectives, data, scope |
-| 2 | Methodological strategy |
-| 3 | Regulatory compliance and interpretability requirements |
-| 4–5 | Analysis scope and out-of-scope |
-| 6 | Exploratory data analysis (EDA) |
-| 6.1 | Data quality audit |
-| 6.2 | Legislative distribution |
-| 6.3 | Demographic profile |
-| 6.4 | Educational profile |
-| 6.5 | Prior experience |
-| 6.6 | Career trajectories |
-| 6.7 | Commission participation |
-| 6.8 | Multivariate relations |
-| 7 | Diputrax model |
-| 7.1 | Data loading and feature engineering |
-| 7.2 | Modeling infrastructure |
-| 7.3 | Nodal commissions — binary classification |
-| 7.4 | Lastre commissions — binary classification |
-| 7.5 | Thematic commissions — Poisson regression |
-| 7.6 | Cross-era importance comparison |
-| 7.7 | Temporal validation — rolling forward |
-| 7.8 | Prototypical profiles (highest SHAP) |
-| 7.9 | Summary table — all models |
-| 7.10 | Interpretation guide |
-| 8 | Conclusions and key findings |
+| 1 | Resumen ejecutivo — contexto, objetivos, datos, alcance |
+| 2 | Estrategia metodológica |
+| 2.1 | Esquema, análisis y calidad de datos |
+| 2.2 | Análisis exploratorio de datos (EDA) |
+| 3 | Análisis de relaciones multivariadas |
+| 4 | Estrategia de modelado: modelo Diputrax |
+| 4.1 | Diseño del estudio y lógica temporal por eras |
+| 4.2 | Guía de interpretación de métricas |
+| 4.3 | Carga de datos y feature engineering |
+| 4.4 | Infraestructura de modelado |
+| 5 | Comisiones Nodales — clasificación binaria |
+| 5.1 | SHAP beeswarm por era |
+| 5.2 | Heatmap de importancias SHAP por era |
+| 5.3 | Evolución temporal de features clave |
+| 5.4 | Resultados por era — métricas AUC |
+| 5.5 | Interpretación — comisiones nodales |
+| 6 | Comisiones Lastre — clasificación binaria |
+| 6.1 | Comparativa SHAP nodales vs lastre |
+| 6.2 | Test de imagen espejo |
+| 6.3 | Resultados por era — métricas AUC |
+| 6.4 | Interpretación — comisiones lastre |
+| 7 | Comisiones Temáticas — regresión Poisson |
+| 7.1 | Resultados por era — MAE |
+| 7.2 | Interpretación — comisiones temáticas |
+| 8 | Análisis comparativo entre eras |
+| 8.1 | Importancias SHAP consolidadas |
+| 8.2 | Validación temporal — rolling forward |
+| 8.3 | Interpretación — validación temporal |
+| 9 | Perfiles prototípicos por era |
+| 9.1 | Tabla comparativa de perfiles |
+| 9.2 | Lectura comparativa — evolución del perfil nodal |
+| 10 | Resumen consolidado de rendimiento (36 modelos) |
+| 10.1 | Interpretación consolidada |
+| 11 | Conclusiones y hallazgos clave |
 
-## Key findings
+## Guía de métricas
 
-- **Nodal** committees are moderately predictable (AUC 0.62–0.73). Signal decays across eras: strongest under PRI (ERA_1), weakest under Morena (ERA_4).
-- **Lastre** committees are essentially opaque (AUC 0.53–0.63). Mirror-image hypothesis rejected — nodal and lastre operate under partially independent assignment logic (SHAP correlation −0.56 to −0.68, not −1.0).
-- **Thematic** commissions are unpredictable from biographical profile alone (≤8% improvement over mean baseline). Assignment is driven by unobservable intra-party negotiations.
-- **Temporal transfer** (train ERA k → predict ERA k+1) is solid for ERA_1→ERA_2 and ERA_3→ERA_4 (AUC ≈ 0.71), with a notable drop at ERA_2→ERA_3 reflecting political fragmentation.
-- Top predictors across eras: `es_partido_mayoria`, `n_cargos_legislativos_prev`, `n_trayectoria_admin`, `n_trayectoria_politica`.
+| Métrica | Target | Interpretación |
+|---------|--------|----------------|
+| AUC | Nodales, Lastre | 0.50 = aleatorio · 0.65–0.75 = señal moderada · >0.75 = señal fuerte |
+| MAE | Temáticas | Comparado contra baseline (predecir siempre la media) |
+
+Validación cruzada estratificada de 5 pliegues dentro de cada era. Validación temporal: entrenar en ERA k → predecir ERA k+1.
+
+## Hallazgos clave
+
+**H1 — Comisiones nodales moderadamente predecibles (AUC 0.62–0.73).** La señal decae a lo largo del tiempo: más fuerte bajo el PRI (ERA_1, AUC 0.734), más débil bajo Morena (ERA_4, AUC 0.619–0.643).
+
+**H2 — Comisiones lastre esencialmente opacas (AUC 0.53–0.63).** La hipótesis de imagen espejo queda rechazada: las correlaciones SHAP entre nodal y lastre oscilan entre −0.56 y −0.68, lejos de −1.0. Son mecanismos institucionales distintos.
+
+**H3 — Comisiones temáticas prácticamente impredecibles.** Mejora sobre el baseline ≤8.2% en ERA_1; colapsa a ≈0% en ERA_2 y ERA_4. La asignación es de naturaleza distributiva/administrativa, no meritocrática.
+
+**H4 — ERA_2 → ERA_3 fue la ruptura más profunda.** El rolling forward muestra AUC 0.652 en esa transición, la caída más pronunciada. La fragmentación multipartidista de las legislaturas LXIII–LXV generó la mayor heterogeneidad de criterios.
+
+**H5 — Morena legislativizó el perfil nodal.** ERA_4 premia cargos legislativos previos y formación de posgrado sobre la trayectoria administrativa que dominaba en PRI y PAN. `es_partido_mayoria` sube a |SHAP| 0.170 — filiación al bloque como requisito de acceso.
+
+**H6 — Regresión Logística es competitiva.** LR gana o empata en la mayoría de combinaciones para nodales, sugiriendo que la estructura subyacente de asignación es en gran parte lineal.
+
+**Predictores clave a lo largo de eras:** `es_partido_mayoria`, `n_cargos_legislativos_prev`, `n_trayectoria_admin`, `n_trayectoria_politica`, `edad_imp`, `area_Derecho`.
+
+## Perfiles prototípicos por era
+
+| Dimensión | ERA_1 PRI | ERA_2 PAN | ERA_3 Trans. | ERA_4 Morena |
+|-----------|-----------|-----------|--------------|--------------|
+| Partido mayoría | No (trayectoria sobre filiación) | Sí (militancia PAN) | No (mayoría relativa) | Sí (bloque Morena) |
+| Capital político | Alto (10 cargos) | Alto (11 cargos) | Moderado (6) | Bajo pol., alta exp. leg. |
+| Capital administrativo | Moderado (4) | Muy alto (13) | Moderado (4) | Alto (8) |
+| Educación | Posgrado + elite | Tecnocrático privado | Licenciatura pública | Posgrado público |
+
+## Limitaciones
+
+| Limitación | Impacto |
+|------------|---------|
+| ERA_4 n≈500 (una sola legislatura) | Intervalos AUC ±0.06 — resultados orientativos |
+| Anomalía `grado_estudios_ord` en LIX | Sesgo potencial en ERA_1 |
+| 10.2% nulos en edad imputados | Sesgo leve hacia la media |
+| Reelecciones no separadas | Perfil de reelectos puede sesgar importancias SHAP |
+| Factores no observados (redes, negociaciones) | Techo real de AUC desconocido |
+
+## Próximos pasos
+
+1. Separar reelectos de primiparos para analizar si la lógica de asignación difiere.
+2. Incluir variables de red (co-membresía previa, partido del presidente de comisión).
+3. Modelar ERA_4 con más datos cuando se incorporen legislaturas LXVII y LXVIII.
+4. Analizar interacciones entre `es_partido_mayoria` y `n_cargos_legislativos_prev` en ERA_4.
+5. Calibrar probabilidades con Platt scaling para aplicación operativa del modelo lastre.
