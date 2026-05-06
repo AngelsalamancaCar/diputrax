@@ -1,6 +1,13 @@
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from unidecode import unidecode
+
+try:
+    import gender_guesser.detector as _gg_mod
+    _GG = _gg_mod.Detector()
+except ImportError:
+    _GG = None
 
 SOURCE_DIR = Path("data/source")
 OUTPUT_FILE = Path(f"data/database/diputados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet")
@@ -19,6 +26,107 @@ PARTIDO_MAYORIA = {
     65: "MORENA",  # LXV   2021-2024 — MORENA 40 %
     66: "MORENA",  # LXVI  2024-2027 — MORENA 51 % (Sheinbaum)
 }
+
+
+_GENDER_SUPPLEMENT: dict[str, str] = {
+    # Male
+    "JOAQUIN": "M", "CUAUHTEMOC": "M", "LEOBARDO": "M", "RAYMUNDO": "M",
+    "ECTOR": "M", "TERESO": "M", "YERICO": "M", "HERNAN": "M", "ROMULO": "M",
+    "FERMIN": "M", "FAVIO": "M", "ISAEL": "M", "BALDEMAR": "M", "ERUBIEL": "M",
+    "WENCESLAO": "M", "CUITLAHUAC": "M", "ZEUS": "M", "NABOR": "M",
+    "BRASIL": "M", "AZAEL": "M", "HIREPAN": "M", "IRINEO": "M",
+    "EUKID": "M", "ERUVIEL": "M", "INELVO": "M", "RIULT": "M",
+    "LIEV": "M", "ESDRAS": "M", "GIBRAN": "M", "RAUDEL": "M",
+    "OTNIEL": "M", "OTONIEL": "M", "ASAEL": "M", "RANULFO": "M",
+    "RACIEL": "M", "ELMAR": "M", "DANNER": "M", "NEFTALI": "M",
+    "ERACLIO": "M", "OSIEL": "M", "OSSIEL": "M", "DELVIM": "M",
+    "LIMBERT": "M", "BALFRE": "M", "ABDALLAN": "M", "BARUCH": "M",
+    "ENOCH": "M", "FERNEL": "M", "RODIMIRO": "M", "DOMITILO": "M",
+    "GUMERCINDO": "M", "ARQUIMIDES": "M", "ABENAMAR": "M", "FAUZI": "M",
+    "ELIHER": "M", "CUAUHTLI": "M", "ITZCOATL": "M", "TECUTLI": "M",
+    "ZENYAZEN": "M", "AMARANTE": "M", "WBLESTER": "M", "DELBER": "M",
+    "SILBESTRE": "M", "UBERLY": "M", "ABDIES": "M", "ELEAZAR": "M",
+    "CHARBEL": "M", "HIRAM": "M", "INTI": "M", "CRISTOBAL": "M",
+    "ORESTES": "M", "ERANDI": "M", "WILLIAMS": "M", "SANTY": "M",
+    "PALACIOS": "M", "UUC-KIB": "M",
+    # Female
+    "ROCIO": "F", "CONCEPCION": "F", "ARELI": "F", "ARACELY": "F",
+    "ANNIA": "F", "ESTHELA": "F", "DIONICIA": "F", "ABRIL": "F",
+    "ELBA": "F", "ROSELIA": "F", "MAIELLA": "F", "CIRIA": "F",
+    "GUILLERMINA": "F", "MERARY": "F", "FRINNE": "F", "ENOE": "F",
+    "LORENIA": "F", "XITLALIC": "F", "ARLET": "F", "ZACIL": "F",
+    "IVETH": "F", "LUCELY": "F", "AZUL": "F", "LEYDI": "F",
+    "YULMA": "F", "YARITH": "F", "YARET": "F", "EVELYNG": "F",
+    "SHANTALL": "F", "EMILSE": "F", "LILIAM": "F", "LANDY": "F",
+    "YATZIRI": "F", "ALLIET": "F", "ZULEYMA": "F", "DORHENY": "F",
+    "EDILTRUDIS": "F", "ANILU": "F", "IRASEMA": "F", "CRISTABELL": "F",
+    "NELY": "F", "MARICARMEN": "F", "ARANZAZU": "F", "YULENNY": "F",
+    "ANAY": "F", "ANAIS": "F", "HAIDYD": "F", "ANTARES": "F",
+    "DELHI": "F", "LEIDE": "F", "ANY": "F", "TEY": "F",
+    "AREMY": "F", "DENISSE": "F", "GREYCY": "F", "IRAIS": "F",
+    "ANAYELI": "F", "AMANCAY": "F", "YEIDCKOL": "F", "JANICIE": "F",
+    "BENNELLY": "F", "ANABEY": "F", "YEIMI": "F", "TAYGETE": "F",
+    "YARY": "F", "AMALIN": "F", "ANGELES": "F",
+}
+
+_GG_TO_BINARY = {
+    "male": "M", "mostly_male": "M",
+    "female": "F", "mostly_female": "F",
+}
+
+_SKIP_PREPOSITIONS = {"DE", "DEL", "LOS", "LAS", "LA", "EL"}
+
+
+def _parse_first_name(nombre: str) -> str:
+    parts = unidecode(nombre.strip()).split()
+    if not parts:
+        return ""
+    first = parts[0].upper()
+    if first in ("MA.", "MA", "M."):
+        rest = parts[1:]
+        while rest and rest[0].upper() in _SKIP_PREPOSITIONS:
+            rest = rest[1:]
+        return rest[0].upper() if rest else "MA"
+    if first in ("J.", "J"):
+        return parts[1].upper() if len(parts) > 1 else "J"
+    return first
+
+
+def _infer_one(nombre: str) -> str | None:
+    parts = unidecode(nombre.strip()).split()
+    first = _parse_first_name(nombre)
+
+    if first in _GENDER_SUPPLEMENT:
+        return _GENDER_SUPPLEMENT[first]
+
+    if _GG is not None:
+        gg = _GG.get_gender(first.capitalize())
+        if gg in _GG_TO_BINARY:
+            return _GG_TO_BINARY[gg]
+
+    # Try second given name for ambiguous/unknown first names
+    if len(parts) > 1:
+        second = unidecode(parts[1]).upper()
+        if second in _GENDER_SUPPLEMENT:
+            return _GENDER_SUPPLEMENT[second]
+        if _GG is not None:
+            gg2 = _GG.get_gender(second.capitalize())
+            if gg2 in _GG_TO_BINARY:
+                return _GG_TO_BINARY[gg2]
+
+    # Spanish morphological fallback
+    if first.endswith("A"):
+        return "F"
+    if first.endswith(("O", "OR", "AN", "ON", "EL", "IN")):
+        return "M"
+
+    return None
+
+
+def add_sexo(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["sexo"] = df["nombre"].apply(_infer_one)
+    return df
 
 
 def add_partido_mayoria(df: pd.DataFrame) -> pd.DataFrame:
@@ -45,6 +153,7 @@ def main():
 
     merged = pd.concat(dfs, ignore_index=True)
     merged = add_partido_mayoria(merged)
+    merged = add_sexo(merged)
     print(f"\nTotal rows: {len(merged)}")
     print(f"es_partido_mayoria — rate: {merged['es_partido_mayoria'].mean():.3f}  nulls: {merged['partido_mayoria'].isna().sum()}")
 
