@@ -1,0 +1,672 @@
+=== CELL 68 ===
+# 4.1 Diseño del estudio y lógica temporal por eras
+
+## Pregunta de investigación
+
+¿El perfil biográfico, educativo y de trayectoria de un diputado predice a qué tipo de comisión es asignado, y ese perfil ha cambiado entre épocas políticas?
+
+---
+
+## Tipología de comisiones
+
+| Tipo | Definición operacional | Implicación política |
+|---|---|---|
+| Nodal | ≥1 comisión nodal (presupuesto, hacienda, seguridad) | Alta influencia · cargo de confianza del grupo mayoritario |
+| Lastre | ≥1 comisión lastre (sin recursos ni dictámenes) | Marginalización · oposición o primíparos sin red |
+| Temática | Conteo de comisiones temáticas (0–10) | Especialización · volumen de trabajo legislativo |
+
+---
+
+## Épocas y distribución de datos
+
+| Época | Legislaturas | Régimen | n | Tasa nodal | Tasa lastre | Media temáticas |
+|---|---|---|---:|---:|---:|---:|
+| ERA_1 | 57–59 | PRI hegemónico | 1500 | 32.2 % | 42.1 % | 1.53 |
+| ERA_2 | 60–62 | Alternancia PAN | 1500 | 40.7 % | 45.9 % | 1.93 |
+| ERA_3 | 63–65 | Transición | 1500 | 49.5 % | 49.9 % | 2.15 |
+| ERA_4 | 66 | Morena | 500 | 55.4 % | 39.2 % | 1.87 |
+
+> **Nota:** ERA_4 tiene sólo una legislatura (`n = 500`). Intervalos de confianza más amplios: interpretar con cautela.
+
+---
+
+## *Feature engineering* — 86 *features*
+
+| Bloque | Variables representativas |
+|---|---|
+| Político-electoral | `sexo_bin`, `mayoria_relativa`, `es_partido_mayoria`, `legislatura_num` |
+| Trayectoria legislativa | `n_cargos_legislativos_prev`, `fue_diputado_federal`, `fue_senador`, `n_trayectoria_legislativa` |
+| Trayectoria administrativa | `n_trayectoria_admin`, `nivel_cargo_max`, `fue_secretario_cargo`, `fue_presidente_mun` |
+| Trayectoria política | `n_trayectoria_politica`, `n_trayectoria_empresarial`, `lider_juvenil_partido` |
+| Educación | `grado_estudios_ord`, `tiene_posgrado`, `univ_elite`, `estudios_en_extranjero` |
+| Dummies | Partido —8 categorías—, Región —6—, Área de formación —3: `area_Derecho`, `C. Políticas y Sociales`, `Económico-Financiera`— |
+
+**Criterio de selección:** se retienen todas las variables de los cinco bloques de trayectoria y las de contexto institucional.
+
+Se eliminaron:
+
+- Las 10 *dummies* individuales de institución universitaria, reemplazadas por `univ_elite`.
+- Las 10 *dummies* de área disciplinaria excedentes, manteniendo solo 3 con justificación teórica.
+- Las 3 variables compuestas que sumaban o maximizaban componentes ya presentes:
+  - `carrera_depth`
+  - `edu_calidad`
+  - `exp_alta_jerarquia`
+
+---
+
+## Lógica del diseño de modelado
+
+Cada uno de los tres *targets* se modela por separado dentro de cada era. Esto permite:
+
+1. Detectar si el perfil que predice la asignación cambia entre épocas —AUC/MAE por era—.
+2. Identificar qué *features* ganan o pierden importancia a lo largo del tiempo —SHAP por era—.
+3. Medir la transferencia del modelo entre períodos —validación *rolling forward*—.
+
+El modelo empleado es **Regresión Logística L1 —Lasso—**, evaluada en dos variantes:
+
+| Variante | Descripción |
+|---|---|
+| `LR L1 (full)` | L1 sobre los 86 *features* sin preselección. |
+| `LR L1 + SFM` | *Pipeline* `StandardScaler` → `SelectFromModel(LR L1)` → `LR L1`, donde la selección automática identifica el subconjunto mínimo de *features* con peso no nulo por era. |
+
+La penalización L1 produce modelos *sparse*: los coeficientes de *features* irrelevantes convergen a cero durante el entrenamiento, haciendo que la selección forme parte del proceso de ajuste.
+
+`SelectFromModel`, con `threshold='mean'`, retiene únicamente las variables cuya magnitud de coeficiente supera la media, reduciendo el espacio de *features* activos por era.
+
+La comparación entre `LR L1 (full)` y `LR L1 + SFM` permite cuantificar el costo/beneficio de la selección automática en AUC.
+
+---
+
+# 4.2 Guía de interpretación de métricas
+
+## AUC — Nodales y Lastre: clasificación binaria
+
+| Rango | Lectura |
+|---|---|
+| 0.50 | Aleatorio: el perfil no predice la asignación |
+| 0.55–0.65 | Señal débil: factores no observados dominan |
+| 0.65–0.75 | Señal moderada: el perfil importa, pero no determina |
+| 0.75–0.85 | Señal fuerte: el perfil es factor relevante |
+| > 0.85 | Señal muy fuerte: asignación casi determinista |
+
+---
+
+## MAE — Temáticas: regresión Poisson
+
+La métrica se compara contra el *baseline* de predecir siempre la media.
+
+Una mejora **≤5 %** es prácticamente nula dada la varianza del *target*.
+
+---
+
+## Preguntas de investigación y *tests* asociados
+
+| Pregunta | Test |
+|---|---|
+| ¿Cambió el perfil de reclutamiento a nodales? | Tendencia SHAP: si `n_trayectoria_admin` cae y `es_partido_mayoria` sube en ERA_4 → sí |
+| ¿Lastre es imagen espejo de nodales? | Correlación `SHAP(nodal)` vs. `-SHAP(lastre)`: si `r ≈ −1.0` → sí |
+| ¿`es_partido_mayoria` domina? | Posición en *heatmap* SHAP |
+| ¿Hay ruptura temporal ERA_1 → ERA_4? | AUC *rolling* ERA_2→ERA_3 vs. ERA_1→ERA_2 |
+
+---
+
+## Notas de calidad
+
+- `grado_estudios_ord` en LIX tiene promedio 1.49 —vs. aproximadamente 4 en otras legislaturas—: probable error de captura que afecta ERA_1.
+- 10.2 % de nulos en edad fueron imputados por media de legislatura.
+- ERA_4 tiene `n = 500`: intervalos AUC ±0.06; resultados orientativos.
+- 625 registros son reelecciones válidas: no son *leakage* entre eras.
+
+---
+
+# 4.3 Justificación del parámetro `k = 5` en la validación cruzada
+
+La validación cruzada estratificada de 5 pliegues —*5-fold stratified CV*— se adopta como método único en todas las eras. La elección responde a tres criterios.
+
+---
+
+## 1. Tamaño de *fold* mínimo viable en ERA_4 — `n = 500`
+
+| k | Obs. test / *fold* | Positivos test — nodal | Positivos test — lastre | Estabilidad AUC |
+|---:|---:|---:|---:|---|
+| 5 | 100 | ~55 | ~39 | Aceptable |
+| 10 | 50 | ~28 | ~20 | Marginal |
+| n — LOO | 1 | — | — | Indefinida — AUC requiere ≥1 positivo y ≥1 negativo |
+
+Con `k = 10`, el *fold* de prueba en ERA_4 contiene aproximadamente 28 positivos nodales, zona donde el estimador de AUC muestra varianza elevada —Hanley & McNeil, 1982—.
+
+Con `k = 5`, se obtienen aproximadamente 55 positivos por *fold*, umbral por encima del cual el AUC es razonablemente estable.
+
+Esta restricción domina la elección: se usa `k = 5` en todas las eras para garantizar consistencia en la comparación de AUC entre épocas.
+
+---
+
+## 2. Consistencia metodológica entre eras
+
+Usar `k` distinto por era —por ejemplo, `k = 10` para ERA_1–ERA_3 y `k = 5` para ERA_4— introduciría sesgo sistemático.
+
+El estimador con `k = 10` tiene menor sesgo, pero mayor varianza que `k = 5`, haciendo que los AUC de ERA_1–ERA_3 y ERA_4 no sean directamente comparables.
+
+Fijar `k = 5` en las cuatro eras asegura que las diferencias de AUC reflejen variación real, no artefactos del protocolo de evaluación.
+
+---
+
+## 3. Respaldo en la literatura
+
+Kohavi (1995) muestra empíricamente que `k = 5` y `k = 10` producen estimaciones de error prácticamente idénticas en la mayoría de los conjuntos de datos evaluados. Recomienda `k = 10` como regla general, pero reconoce que `k = 5` es preferible cuando el *fold* de prueba sería demasiado pequeño.
+
+James et al. (2021, §5.1.3) presentan `k = 5` y `k = 10` como opciones equivalentes para la mayoría de aplicaciones de aprendizaje supervisado.
+
+Arlot y Celisse (2010) demuestran que LOO —`k = n`— tiene varianza asintótica más alta que *k-fold* para estimadores no lineales, lo que lo hace subóptimo incluso en muestras pequeñas.
+
+LOO también sería computacionalmente prohibitivo:
+
+```text
+n = 1500 modelos × 4 eras × 3 targets × 2 variantes
+  = >36,000 entrenamientos
+
+=== CELL 80 ===
+## 4.5 Infraestructura Bayesiana - PyMC NUTS (v7)
+
+Complementa el pipeline frecuentista (LR L1 + SFM) con Regresion Logistica Bayesiana. El modelo usa exactamente los features seleccionados por SFM en cada era, con identica estandarizacion via StandardScaler del pipeline LR.
+
+**Priors (Gelman et al. 2008 - predictores estandarizados):**
+
+- Intercepto alpha: Normal(0, 5) - difuso
+- Coeficientes beta: Normal(0, 2.5) - debilmente informativo
+
+**Muestreador:** NUTS (No-U-Turn Sampler). 4 cadenas x 1500 draws + 800 tune. target_accept=0.90. cores=1 (compatibilidad Windows).
+
+**Diagnosticos:** R-hat < 1.05 = convergencia. ESS > 400 = suficiente.
+
+**Esparsidad:** LR L1 fuerza coefs = 0. Bayesiano produce masa posterior concentrada cerca de cero (esparsidad suave). Comparacion restringida al subconjunto SFM-activo.
+
+=== CELL 95 ===
+## 5.5 Interpretación — Comisiones Nodales
+
+Se observa una **señal decreciente a lo largo del tiempo**. El AUC del modelo **LR L1 + SFM** cae de **0.728** en `ERA_1` a **0.629** en `ERA_4`, lo que indica que el perfil biográfico predice progresivamente peor quién obtiene una comisión nodal.
+
+### Hallazgos clave por era
+
+#### ERA_1 — PRI
+
+- **AUC:** 0.728  
+- **Features activos:** 21  
+
+`area_Derecho` encabeza la importancia media (`0.337`), seguido de `fue_secretario_cargo` y `univ_privada` —ambos con `0.173`.  
+
+`n_trayectoria_empresarial` (`0.089`) y `n_trayectoria_politica` aparecen como señales marginales. En esta era, la formación jurídica y la credencial ejecutiva priísta son las señales centrales, no la trayectoria de carrera política pura.
+
+#### ERA_2 — PAN
+
+- **AUC:** 0.719  
+- **Features activos:** 19  
+
+`area_Derecho` (`0.340`) y `edad_imp` (`0.228`) aparecen prácticamente equiparados, con un pico histórico de `edad_imp`.  
+
+También son relevantes `tiene_posgrado` (`0.167`) y `fue_director` (`0.162`), mientras que `sexo_bin` (`0.122`) emerge como señal activa.
+
+> **Nota:** La importancia de `edad_imp` en `ERA_2` puede estar parcialmente inflada por MNAR (§2.2.1b).
+
+#### ERA_3 — Transición
+
+- **AUC:** 0.696  
+- **Features activos:** 21  
+
+Tres features aparecen casi igualados:
+
+- `area_Derecho` (`0.194`)
+- `p_MORENA` (`0.181`)
+- `n_trayectoria_legislativa` (`0.176`)
+
+`sexo_bin` (`0.169`) alcanza su pico histórico como cuarto feature más relevante.  
+
+`fue_secretario_cargo` (`0.142`) sigue siendo relevante, pero **no alcanza aquí su pico**, ya que este ocurre en `ERA_1`.
+
+#### ERA_4 — Morena
+
+- **AUC:** 0.629  
+- **Features activos:** 18  
+
+`area_Derecho` (`0.277`) y `n_cargos_legislativos_prev` (`0.263`) aparecen casi igualados, ambos por encima de cualquier otro feature.  
+
+`sexo_bin` (`0.120`) ocupa el tercer lugar, mientras que `n_trayectoria_legislativa` (`0.032`) es marginal.
+
+> Con `n = 500`, el intervalo de confianza aproximado es **±0.053**, por lo que el resultado debe interpretarse como orientativo.
+
+---
+
+### Evolución del perfil nodal  
+**SHAP en log-odds**
+
+| Feature | ERA_1 | ERA_2 | ERA_3 | ERA_4 | Patrón |
+|---|---:|---:|---:|---:|---|
+| `area_Derecho` | 0.337 | 0.340 | 0.194 | 0.277 | Señal persistente; top-1 en 3 de 4 eras |
+| `edad_imp` | 0.000 | 0.228 | 0.114 | 0.035 | Pico en ERA_2; caída fuerte; caveat MNAR |
+| `fue_secretario_cargo` | 0.173 | 0.069 | 0.142 | 0.000 | Pico en ERA_1, no en ERA_3 |
+| `n_cargos_legislativos_prev` | 0.000 | 0.132 | 0.133 | 0.263 | Escala con reelección; pico en ERA_4 |
+| `n_trayectoria_legislativa` | 0.083 | 0.000 | 0.176 | 0.032 | Pico en ERA_3; patrón no monotónico |
+| `sexo_bin` | 0.000 | 0.122 | 0.169 | 0.120 | Emerge en ERA_2; pico en ERA_3; persiste |
+| `p_MORENA` | 0.000 | 0.000 | 0.181 | 0.094 | Variable partidista activa en ERA_3 y ERA_4 |
+| `tiene_posgrado` | 0.000 | 0.167 | 0.147 | 0.000 | Activa solo en ERA_2 y ERA_3 |
+| `mayoria_relativa` | 0.107 | 0.131 | 0.000 | 0.000 | Activa solo durante el bipartidismo ERA_1–ERA_2 |
+
+---
+
+### Modelo
+
+El modelo utilizado es **LR L1 + SelectFromModel**. Su estructura es predominantemente lineal, lo cual es coherente con la teoría, en tanto refleja reglas de partido relativamente formalizadas.
+
+La esparsidad del modelo varía por era, con entre **18 y 21 features activos** de un total de **86 features**.
+
+---
+
+### Tendencia central
+
+La evolución del perfil nodal puede sintetizarse como una transición desde un perfil político-jurídico priísta hacia una lógica más parlamentarizada:
+
+1. **ERA_1 — PRI:** Derecho + secretaría.  
+2. **ERA_2 — PAN:** Derecho + edad + posgrado.  
+3. **ERA_3 — Transición:** Derecho + MORENA + experiencia legislativa.  
+4. **ERA_4 — Morena:** Derecho + cargos legislativos previos + MORENA.  
+
+En todas las eras, `sexo_bin` opera como una barrera implícita desde `ERA_2`.
+
+
+=== CELL 103 ===
+**Interpretacion - Comparativa LR L1 vs. Bayesiano (Nodales)**
+
+**AUC:** La diferencia entre AUC frecuentista (CV) y AUC Bayesiano (media posterior in-sample) refleja dos cosas distintas: el CV evalua generalizacion out-of-fold; el AUC Bayesiano evalua ajuste in-sample. Diferencias |Delta| < 0.02 indican consistencia. |Delta| > 0.04 puede senalar sobreajuste del Bayesiano.
+
+**Forest plots:** Los coeficientes L1 son esparsos por construccion; los betas bayesianos tienen masa distribucional positiva incluso para features marginales. Donde ambos son del mismo signo con HDI que excluye cero, la senal es robusta al paradigma.
+
+**Concordancia de direccion:** >= 85% indica ranking cualitativo estable. < 70% senala sensibilidad del resultado al estimador elegido.
+
+**Resultados observados (v7):** Concordancia de direccion = 100% en las 4 eras (ERA_1: 21/21, ERA_2: 19/19, ERA_3: 21/21, ERA_4: 18/18). AUC Bayesiano supera al LR L1 en todas las eras: ERA_1=0.763 (+0.034), ERA_2=0.745 (+0.024), ERA_3=0.731 (+0.033), ERA_4=0.733 (+0.102). El delta ERA_4 (0.102) es el mayor de la serie, indicando que el Bayesiano extrae mas senal con n=500, aunque parte puede ser ajuste in-sample. Convergencia MCMC: R-hat=1.000 y ESS_min=2349 (ERA_1) en todos los parametros.
+
+**R-hat y ESS:** R-hat < 1.05 y ESS > 400 son condicion necesaria para validez inferencial bayesiana. Valores fuera de rango invalidan las inferencias de esa era.
+
+**Conexion con A&L (2009):** El Bayesiano confirma el ranking en ERA_1: area_Derecho, fue_secretario_cargo y n_trayectoria_admin tienen betas positivos significativos (HDI excluye cero), replicando la prioridad de la experiencia burocratica sobre la legislativa. Features con HDI que excluyen cero: ERA_1=15, ERA_2=12, ERA_3=16, ERA_4=6 de los features SFM seleccionados.
+
+=== CELL 116 ===
+## 6.4 Interpretacion -- Comisiones Lastre
+Senal consistentemente debil. AUC (LR L1 + SFM) entre 0.525 y 0.634.
+
+Hallazgos por era:
+
+- ERA_1 (PRI) -- AUC=0.583, 20 features activos. nivel_cargo_max (0.147) lidera, seguido de edad_imp (0.133) y legislatura_num (0.127). Ningun feature de trayectoria politica o juridica destaca -- el mecanismo de asignacion lastre en el PRI parece regido por variables de contexto institucional (nivel de cargo, momento de la legislatura) mas que por perfil de carrera.
+- ERA_2 (PAN) -- AUC=0.634, 26 features activos. Epoca mas predecible. n_trayectoria_admin (0.174) y n_organos_gobierno (0.144) lideran -- la oposicion PRI/PRD era mas homogenea en perfil administrativo. edad_imp (0.149) tambien relevante.
+- ERA_3 (Transicion) -- AUC=0.601, 23 features activos. edad_imp (0.158) es el top-1 de la era para lastre, seguido de univ_privada (0.097) y variables regionales (reg_SUR=0.085, reg_NORTE=0.074).
+- ERA_4 (Morena) -- AUC=0.525, 13 features activos. El modelo mas escaso. n_cargos_legislativos_prev (0.169) y univ_privada (0.121) emergen -- los diputados de oposicion con mayor trayectoria parlamentaria y formacion privada reciben mas comisiones lastre. edad_imp es eliminado por L1 (0.000).
+
+**Test de imagen espejo -- resultado:**
+
+**La hipotesis de imagen espejo es FALSA.** Correlaciones SHAP(nodal) vs -SHAP(lastre): ERA_1=-0.109, ERA_2=-0.387, ERA_3=-0.260, ERA_4=-0.373 -- todas lejos de -1.0 (ver tabla en §6.2).
+
+1. Nodal y lastre tienen logicas parcialmente independientes.
+2. ERA_2 (r=-0.387) es la epoca mas cercana a una logica bimodal mayoria/oposicion; ERA_4 (r=-0.373) replica un patron similar bajo Morena.
+3. Los predictores dominantes de lastre (edad_imp, n_trayectoria_admin, univ_privada) son distintos de los de nodales (area_Derecho, n_cargos_legislativos_prev, sexo_bin).
+
+**Implicacion metodologica:** nodal y lastre deben modelarse como outcomes separados. La penalizacion L1 produce modelos mas esparsos para lastre (13 features en ERA_4 vs 18 en nodales).
+
+=== CELL 120 ===
+**Interpretacion - Comparativa LR L1 vs. Bayesiano (Lastre)**
+
+El AUC LR L1 observado para lastre (ERA_1=0.586, ERA_2=0.639, ERA_3=0.601, ERA_4=0.526) se traduce en HDI amplios que cruzan cero para la mayoria de los features: el Bayesiano cuantifica explicitamente que no hay informacion suficiente en el perfil biografico para distinguir quien recibe una comision lastre. AUC Bayesiano: ERA_1=0.645, ERA_2=0.693, ERA_3=0.668, ERA_4=0.668. Convergencia OK en todas las eras (R-hat=1.000, ESS_min=2373). Features con HDI que excluyen cero: ERA_1=12, ERA_2=16, ERA_3=10, ERA_4=4.
+
+Cuando el AUC Bayesiano ~ 0.50 y la mayoria de los HDI incluyen el cero, ambos paradigmas convergen en la misma conclusion sustantiva: la asignacion lastre es esencialmente opaca desde el perfil observable.
+
+Concordancia de direccion: 100% en todas las eras (ERA_1: 20/20, ERA_2: 26/26, ERA_3: 23/23, ERA_4: 13/13). Esta concordancia alta a pesar del bajo AUC confirma que la direccion cualitativa es estable aunque la magnitud sea marginal.
+
+=== CELL 129 ===
+## 7.2 Interpretación — Comisiones Temáticas
+
+Las **comisiones temáticas** son esencialmente impredecibles desde el perfil biográfico.
+
+La mejora sobre el baseline —predecir siempre la media— es mínima:
+
+- **ERA_1:** mejor caso, con aproximadamente **8.2% de mejora**  
+  - GLM Poisson MAE = `0.810`  
+  - Baseline = `0.855`
+- **ERA_2, ERA_3 y ERA_4:** mejora **≤ 3%**, es decir, prácticamente ninguna ganancia predictiva.
+
+### Modelo
+
+El modelo utilizado es un **GLM Poisson**, implementado mediante `PoissonRegressor` con regularización L2.
+
+Para las comisiones temáticas **no se aplica SelectFromModel**, ya que el objetivo es contar, no clasificar. En este caso, el GLM Poisson es el modelo más apropiado para datos de conteo con sobredispersión moderada.
+
+Los valores SHAP se calculan con `LinearExplainer` en espacio de **log-conteo**, es decir, sobre el predictor lineal del GLM con enlace log.
+
+---
+
+### Interpretación política
+
+El número de comisiones temáticas que recibe un diputado depende principalmente de factores no observables directamente en el currículum, tales como:
+
+- Negociaciones internas de bancada.
+- Disponibilidad de cupos por comisión.
+- Preferencias del coordinador parlamentario.
+- Acuerdos de coalición legislativa.
+
+---
+
+### Hallazgo principal
+
+La diferencia entre épocas en la media de comisiones temáticas —de **1.53 en ERA_1** a **2.15 en ERA_3**, con una bajada a **1.87 en ERA_4**— no se traduce en mayor predictibilidad.
+
+La expansión del volumen de comisiones temáticas parece seguir criterios distributivos distintos según la época, pero estos permanecen opacos para el observador externo.
+
+El beeswarm SHAP confirma la ausencia de predictores dominantes: la dispersión de puntos es uniforme y no aparecen variables con una masa SHAP claramente superior al resto.
+
+
+=== CELL 135 ===
+**Interpretación — Comparativa de variantes de Regresión Logística**
+
+Las tres especificaciones parten del mismo pipeline (`StandardScaler` + `LogisticRegression`, `class_weight="balanced"`, `C=0.1`, semilla 42) y difieren únicamente en el tipo de penalización (L2 vs. L1) y en si se aplica selección de variables (`SelectFromModel`).
+
+- **L2 (v4) vs. L1 (full):** ambas usan el conjunto completo de FEAT_COLS; la diferencia de AUC entre ellas (Delta L1-L2) aísla el efecto puro de cambiar la penalización de Ridge (L2) a Lasso (L1). Valores cercanos a cero indican que la elección de penalización es predictivamente neutra y que la ventaja de L1 —si la hay— es de interpretabilidad (esparsidad de coeficientes) más que de poder predictivo.
+- **L1+SFM vs. L2 (v4):** Delta SFM-L2 aísla el efecto combinado de cambiar la penalización y reducir el espacio de variables. Si este delta es comparable o mejor que Delta L1-L2, la reducción de variables vía SelectFromModel no perjudica el desempeño — refuerza la lectura de que el modelo se sostiene sobre un subconjunto compacto de predictores robustos (consistente con los hallazgos SHAP de las secciones 5 y 6).
+- **Lectura metodológica:** la inclusión explícita de la especificación L2 (v4) como línea base histórica documenta la trayectoria del proyecto y permite verificar que la migración hacia L1 (adoptada a partir de v6 por su valor interpretativo) no implicó un costo en desempeño predictivo medido por AUC.
+
+=== CELL 138 ===
+**Interpretación — Tabla consolidada de importancias SHAP**
+
+**Nodales / Lastre / Temáticas × Épocas**
+
+La tabla normaliza la importancia media (`|SHAP|`) de los principales features para los tres targets y las cuatro eras.
+
+- **Clasificación binaria:** interpretada en espacio de **log-odds**.
+- **Temáticas:** interpretadas en espacio de **log-conteo**, correspondiente al enlace log del GLM Poisson.
+
+---
+
+**Nodales — Hallazgos estructurales**
+
+**`area_Derecho`**
+
+- **Valores:** `0.337 / 0.340 / 0.194 / 0.277`
+- **Media:** `0.287`
+
+Es el feature con mayor importancia media de toda la tabla. Su señal no decae: lidera en `ERA_1`, `ERA_2` y `ERA_4`.
+
+**`n_cargos_legislativos_prev`**
+
+- **Valores:** `0.000 / 0.132 / 0.133 / 0.263`
+- **Media:** `0.132`
+
+Alcanza su pico histórico en `ERA_4`. Escala con la reelección consecutiva y casi iguala a `area_Derecho` en esa era.
+
+**`sexo_bin`**
+
+- **Valores:** `0.000 / 0.122 / 0.169 / 0.120`
+- **Media:** `0.103`
+
+Feature no documentado en versiones anteriores. Presenta una señal robusta desde `ERA_2`, con pico en `ERA_3`, donde alcanza el top-4. Sugiere diferenciación de género en la asignación de comisiones de poder.
+
+**`fue_secretario_cargo`**
+
+- **Valores:** `0.173 / 0.069 / 0.142 / 0.000`
+- **Media:** `0.096`
+
+Alcanza su pico en `ERA_1`, no en `ERA_3`. El patrón es sorprendente: la credencial ejecutiva fue más valorada bajo el PRI que bajo el PAN.
+
+**`edad_imp`**
+
+- **Valores:** `0.000 / 0.228 / 0.114 / 0.035`
+- **Media:** `0.094`
+
+Alcanza su pico en `ERA_2` y después cae de forma pronunciada.
+
+> **Caveat:** posible efecto MNAR en `ERA_2` (§2.2.1b).
+
+**`n_trayectoria_legislativa`**
+
+- **Valores:** `0.083 / 0.000 / 0.176 / 0.032`
+- **Media:** `0.073`
+
+Tiene su pico en `ERA_3`, no en `ERA_4`. No escala monotónicamente.
+
+**`p_MORENA`**
+
+- **Valores:** `0.000 / 0.000 / 0.181 / 0.094`
+- **Media:** `0.069`
+
+Variable partidista activa en `ERA_3` y `ERA_4`. No debe confundirse con `es_partido_mayoria`, que el modelo L1 elimina.
+
+---
+
+**Lastre — Hallazgos estructurales**
+
+**`edad_imp`**
+
+- **Valores:** `0.133 / 0.149 / 0.158 / 0.000`
+- **Media:** `0.110`
+
+Es el predictor de mayor magnitud media en lastre. Es eliminado por L1 en `ERA_4`, por lo que su señal se concentra en `ERA_1`, `ERA_2` y `ERA_3`.
+
+**`n_trayectoria_admin`**
+
+- **Valores:** `0.066 / 0.174 / 0.000 / 0.000`
+
+Es relevante en `ERA_2` para lastre, pero está ausente en nodales. Esto sugiere una señal específica del mecanismo de asignación marginal panista.
+
+**`univ_privada`**
+
+- **Valores:** `0.000 / 0.000 / 0.097 / 0.121`
+
+Emerge en `ERA_3` y `ERA_4` para lastre. Presenta un patrón inverso al observado en nodales, donde desaparece en `ERA_3` y `ERA_4`.
+
+---
+
+**Temáticas**
+
+Todas las magnitudes SHAP son menores a `0.05`.
+
+El feature con mayor media es:
+
+- `area_Derecho`: `0.032`
+
+Le sigue:
+
+- `n_organos_gobierno`: `0.025`
+
+La ausencia de predictores dominantes confirma que las comisiones temáticas responden a lógicas distributivas no capturadas por el perfil biográfico.
+
+
+=== CELL 144 ===
+## 8.3 Interpretación — Validación Temporal
+
+**Modelo:** LR L1 + SFM entrenado en `ERA_k` y aplicado a `ERA_k+1`.
+
+| Transición | Nodales AUC | Lastre AUC | Temáticas MAE | Lectura nodales |
+|---|---:|---:|---:|---|
+| `ERA_1 → ERA_2` | 0.711 | 0.615 | 0.867 | Transferencia sólida: PRI y PAN comparten lógica nodal |
+| `ERA_2 → ERA_3` | 0.652 | 0.581 | 0.910 | Caída notable: la fragmentación rompe el perfil PAN |
+| `ERA_3 → ERA_4` | 0.712 | 0.615 | 0.806 | Recuperación: Morena reintroduce centralización |
+
+`ERA_2 → ERA_3` es la transición más disruptiva. La era multipartidista representa el mayor quiebre en la lógica de asignación de poder.
+
+**Lastre**
+
+El AUC rolling para lastre se mantiene bajo en todas las transiciones, con valores entre `0.581` y `0.615`. Esto confirma que el mecanismo de lastre es ruidoso y poco estable entre eras.
+
+**Temáticas**
+
+El MAE de temáticas en `ERA_2 → ERA_3` es `0.910`, valor que supera el baseline de `ERA_3` (`0.895`). Esto indica que el modelo entrenado en la era PAN degrada la predicción de comisiones temáticas durante la transición.
+
+---
+
+**Nota metodológica**
+
+La divergencia en los features seleccionados entre `ERA_k` y `ERA_k+1` constituye evidencia adicional de ruptura de perfil entre eras.
+
+
+=== CELL 153 ===
+## 9.2 Lectura comparativa — Evolución del perfil nodal
+
+| Dimensión | ERA_1 PRI | ERA_2 PAN | ERA_3 Trans. | ERA_4 Morena |
+|---|---|---|---|---|
+| Partido mayoría | Sí | Sí | Sí | Sí |
+| Capital político (`n_trayectoria_politica`) | Alto (13) | Moderado (7) | Pico (17) | Mínimo (4) |
+| Cargos legislativos previos | 0 | 2 | 2 | Pico (3) |
+| Capital administrativo (`n_trayectoria_admin`) | Pico (14) | Moderado (8) | Alto (12) | Moderado (8) |
+| Educación | Licenciatura + elite, sin posgrado | Licenciatura + posgrado + elite | Sin dato + posgrado, sin elite | Doctorado + posgrado + elite |
+| Edad | 52 | 52 | Máxima (60) | 55 |
+| Cargo ejecutivo previo (secretaría) | Sí | Sí | Sí | No (pero ex-senador) |
+| Feature SHAP dominante (poblacional) | `area_Derecho` (0.337) | `area_Derecho` (0.340) / `edad_imp` (0.228) | `area_Derecho` (0.194) / `p_MORENA` (0.181) / `n_tray_leg` (0.176) | `area_Derecho` (0.277) / `n_cargos_leg` (0.263) |
+
+**Patrón evolutivo**
+
+**PRI → PAN:** El perfil se modera en capital político (13→7) y administrativo (14→8), pero gana posgrado, mayoría relativa (único prototipo electo así) y dos primeros cargos legislativos (0→2). El prototipo se "profesionaliza" sin abandonar la militancia mayoritaria.
+
+**PAN → Transición:** El capital político se dispara a su pico histórico (7→17) y la trayectoria administrativa repunta (8→12); la edad alcanza su máximo (60). La secretaría se mantiene como credencial pero el prototipo pierde la universidad de elite — la curtidura política desplaza a la formación académica como eje del perfil fragmentado.
+
+**Transición → Morena:** Ruptura más marcada de la serie. El capital político cae a su mínimo histórico (4) mientras los cargos legislativos previos alcanzan su pico (3); la secretaría desaparece del prototipo y es reemplazada por la trayectoria senatorial y el doctorado — la carrera parlamentaria y la distinción académica sustituyen tanto al cargo ejecutivo como a la militancia de base.
+
+---
+
+La dimensión más reveladora es el capital político: **13 (ERA\_1) → 7 (ERA\_2) → 17 (ERA\_3, pico) → 4 (ERA\_4, mínimo)**. El rango es más amplio que el del capital administrativo (8–14) y marca el quiebre estructural de Morena: por primera vez el prototipo nodal no se construye sobre una carrera de militancia ni de gestión ejecutiva, sino sobre el conteo concreto de cargos parlamentarios previos.
+
+---
+
+**Hallazgo transversal**
+
+Los cuatro prototipos son hombres del partido mayoritario (`sexo_bin=1`, `es_partido_mayoria=1`) — constante que atraviesa los cambios de régimen. A nivel poblacional, `sexo_bin` opera como barrera implícita desde ERA\_2 (top-3 a top-4 en ERA\_2, ERA\_3 y ERA\_4, con SHAP = 0.122 / 0.169 / 0.120). La parlamentarización del perfil nodal bajo Morena no elimina la desventaja de género — el prototipo extremo y la señal poblacional coinciden en marcar al hombre de partido mayoritario como el perfil de máximo acceso.
+
+=== CELL 157 ===
+## 10.1 Interpretación consolidada
+
+**Vista unificada del rendimiento. Conclusiones de conjunto:**
+
+1. **Nodales** son los únicos con señal predictiva genuina (AUC LR L1+SFM: ERA\_1=0.728, ERA\_2=0.719, ERA\_3=0.696, ERA\_4=0.629). La señal es consistente pero se deteriora progresivamente.
+2. **Lastre** es moderadamente predecible solo en ERA\_2 (LR L1+SFM=0.634); opaco en el resto (0.525–0.601). Los predictores de lastre son estructuralmente distintos a los de nodales.
+3. **Temáticas** son prácticamente impredecibles. Mejora sobre baseline: ERA\_1=5.3%, ERA\_2=0.4%, ERA\_3=1.1%, ERA\_4=0.8%.
+4. LR L1 competitiva — la estructura de la asignación es predominantemente lineal. SFM no degrada el AUC respecto a full LR.
+5. Features activos por era: nodales 18–21 de 86 totales; lastre 13–26. La esparsidad es mayor en las eras de menor señal (ERA\_4 lastre: 13 features).
+6. Hallazgo no documentado en versiones anteriores: `sexo_bin` es top-3 a top-4 en nodales desde ERA\_2 (0.122 / 0.169 / 0.120). La brecha de género en asignaciones nodales tiene expresión predictiva directa en el modelo, independiente de trayectoria y formación.
+7. ERA\_4 tiene n=500 e IC amplios (nodal ±0.053, lastre ±0.028) — resultados orientativos, no conclusivos.
+
+---
+
+## 10.2 Análisis de potencia estadística — ERA\_4 y comparación entre eras
+
+ERA\_4 (LXVI) tiene n=500, equivalente a una sola legislatura. Este apartado formaliza las implicaciones de ese tamaño de muestra: (a) calcula el error estándar y el intervalo de confianza del 95% para el AUC reportado; (b) establece el tamaño de efecto mínimo detectable (MDE) a potencia 80% y 90%; (c) evalúa si las diferencias de AUC observadas entre eras son estadísticamente detectables.
+
+El error estándar se estima con la aproximación de Hanley y McNeil (1982), estándar para AUC en clasificación binaria:
+
+$$
+\widehat{\text{SE}}(\widehat{\text{AUC}}) = \sqrt{\frac{\widehat{\text{AUC}}(1 - \widehat{\text{AUC}}) + (n_1 - 1)(Q_1 - \widehat{\text{AUC}}^2) + (n_0 - 1)(Q_2 - \widehat{\text{AUC}}^2)}{n_1 \cdot n_0}}
+$$
+
+donde $Q_1 = \widehat{\text{AUC}} / (2 - \widehat{\text{AUC}})$ y $Q_2 = 2\widehat{\text{AUC}}^2 / (1 + \widehat{\text{AUC}})$.
+
+=== CELL 161 ===
+### 10.2.1 Interpretación — Resultados del análisis de potencia
+
+**Tabla 1 — Potencia por era y target**
+
+Las columnas clave:
+
+- **IC 95% ±:** margen de error del AUC observado. ERA\_4 tiene IC ≈ ±0.048 (nodal) y ±0.052 (lastre), comparado con ≈ ±0.027–0.029 en ERA\_1–3.
+- **AUC observados completos:**
+  - *Nodal:* ERA\_1=0.728, ERA\_2=0.719, ERA\_3=0.696, ERA\_4=0.629
+  - *Lastre:* ERA\_1=0.601, ERA\_2=0.634, ERA\_3=0.577, ERA\_4=0.530
+- **MDE (80%):** tamaño de efecto mínimo detectable con 80% de potencia frente a AUC=0.5. Para ERA\_4 el umbral es AUC ≥ 0.573 (nodal) y AUC ≥ 0.574 (lastre).
+- **¿>MDE?:** si el AUC observado supera ese umbral.
+
+**Veredicto por target:**
+
+| Target ERA\_4 | AUC obs | Umbral 80% | Detectable | Lectura |
+|---|---|---|---|---|
+| Nodal | 0.629 | 0.573 | **SÍ** | Señal genuina — el perfil predice comisiones nodales en LXVI |
+| Lastre | 0.530 | 0.574 | **NO** | AUC por debajo del MDE — no distinguible de aleatorio con n=500 |
+
+---
+
+**Tabla 2 — Diferencias entre eras**
+
+El descenso nodal ERA\_3→ERA\_4 (Δ=0.067) es inferior al MDE inter-era (≈ 0.079). La tendencia descendente del AUC nodal — coherente con la narrativa de Morena concentrando poder fuera del perfil predecible — no alcanza significancia estadística con los datos disponibles.
+
+La diferencia ERA\_1→ERA\_4:
+
+| Comparación | Δ AUC | MDE inter-era | Detectable |
+|---|---|---|---|
+| Nodal ERA\_1→ERA\_4 | 0.099 | 0.080 | **SÍ** |
+| Lastre ERA\_1→ERA\_4 | 0.071 | 0.085 | **NO** |
+
+El deterioro de la señal nodal entre ERA\_1 y ERA\_4 es estadísticamente confirmable; el de lastre no.
+
+---
+
+**Implicación metodológica para Era 4**
+
+Los resultados de ERA\_4 son válidos como estimaciones puntuales y la señal nodal (AUC=0.629) está bien establecida. Sin embargo, las comparaciones inter-era que involucren ERA\_4 deben tratarse como **indicativas, no conclusivas**, para diferencias menores de 0.08 puntos de AUC.
+
+La incorporación de la LXVII (legislatura 2027–2030) elevaría n a ~1 000 y reduciría el MDE a ≈ ±0.035, acercando ERA\_4 a la precisión de las eras anteriores.
+
+=== CELL 162 ===
+# 11. Conclusiones y Hallazgos Clave
+
+---
+
+## 11.1 Hallazgos principales
+
+**H1 — Las comisiones nodales son moderadamente predecibles (AUC 0.62–0.73)**
+
+El perfil biográfico explica una parte real pero no dominante de la asignación nodal. El resto lo determinan factores institucionales no observados: negociaciones de bancada, cuotas de coalición, relaciones personales con liderazgos. La señal se deteriora sistemáticamente a lo largo del tiempo.
+
+**H2 — Las comisiones lastre son esencialmente opacas (AUC 0.53–0.63)**
+
+La hipótesis de que el lastre es el perfil inverso del nodal queda rechazada. Las correlaciones SHAP(nodal) vs −SHAP(lastre) oscilan entre −0.109 (ERA\_1) y −0.387 (ERA\_2), lejos de −1.0. Nodal y lastre deben tratarse como mecanismos institucionales distintos.
+
+**H3 — Las comisiones temáticas son prácticamente impredecibles desde el perfil**
+
+La mejora sobre el baseline no supera el 8.2% en ningún caso y baja a 0.4% en ERA\_2 y 0.8% en ERA\_4 — prácticamente ninguna ganancia. El volumen de comisiones temáticas es una asignación de naturaleza distributiva/administrativa, no meritocrática.
+
+**H4 — La transición ERA\_2 → ERA\_3 fue la ruptura más profunda en la lógica de asignación**
+
+El rolling forward muestra que el modelo entrenado en ERA\_2 (PAN) predice ERA\_3 con AUC=0.652, peor que cualquier otra transición. La fragmentación multipartidista de las legislaturas 63–65 generó la mayor heterogeneidad de criterios.
+
+**H5 — Morena legislativizó el perfil nodal**
+
+ERA 4 premia la carrera parlamentaria (cargos legislativos previos, haber sido senador, doctorado) sobre la trayectoria administrativa que dominaba en PRI y PAN. Esto es consistente con el discurso de gobierno de Morena pero refleja también la menor experiencia burocrática de sus cuadros.
+
+**H6 — La estructura de asignación es lineal y esparsa**
+
+La Regresión Logística L1 mantiene el AUC de versiones anteriores sin necesidad de modelos de árbol. SelectFromModel confirma que en cada era un subconjunto reducido de features captura la señal relevante — el resto tiene coeficiente exactamente cero. La esparsidad es mayor en los mecanismos más opacos (lastre ERA\_4) y menor en los más predecibles (nodales ERA\_1–2).
+
+**H7 — Brecha de género en comisiones nodales, con convergencia en Era 4**
+
+Los hombres tienen mayor tasa de asignación a comisiones nodales en las tres primeras épocas. La brecha se cierra en ERA\_4 (Morena), coincidiendo con la paridad constitucional de 2019 y el mayor número de diputadas electas. `sexo_bin` aparece en el top-15 de importancias SHAP en ERA\_1 y ERA\_2, pero desaparece en ERA\_4, señalando que el género fue un predictor estructural del acceso al poder legislativo hasta la transición democrática reciente.
+
+---
+
+## 11.2 Limitaciones
+
+| Limitación | Impacto |
+|---|---|
+| ERA\_4 n=500 (una sola legislatura) | Intervalos AUC ±0.06 — resultados orientativos, no concluyentes |
+| Anomalía en `grado_estudios_ord` en LIX | Grado promedio 1.49 vs ~4 en otras legislaturas — posible error de captura que afecta ERA\_1 |
+| `edad_al_tomar_cargo`: 10.2% nulos, mecanismo MNAR confirmado (§2.2.1b) | Sesgo de dirección en `edad_imp`: registros sin dato tienen −51% trayectoria política y −10 pp tasa nodal. Importancia SHAP de `edad_imp` en ERA\_2 y ERA\_4 parcialmente inflada. `edad_missing` mitiga pero no cancela. |
+| 625 reelecciones válidas no separadas | No hay leakage por era, pero el perfil de reelectos puede sesgar importancias SHAP |
+| Factores no observados (redes, negociaciones) | Techo de AUC real desconocido — el 35–40% no explicado puede ser ruido o información estructuralmente ausente |
+
+---
+
+## 11.3 Próximos pasos sugeridos
+
+1. Separar reelectos de primerizos para ver si la señal SHAP varía — los reelectos pueden tener lógica de asignación distinta.
+2. Incluir variables de red (co-membresía en comisiones anteriores, partido del presidente de comisión) para subir el techo de AUC.
+3. Modelar ERA\_4 con más datos cuando se incorporen las legislaturas LXVII y LXVIII al dataset.
+4. Análisis de interacciones entre `es_partido_mayoria` y `n_cargos_legislativos_prev` — ERA\_4 sugiere que ambas variables interactúan de forma distinta al resto de épocas.
+5. Calibración de probabilidades para la aplicación operativa: si el modelo se usa para señalar diputados "en riesgo" de recibir lastre, calibrar outputs con Platt scaling.
+
+---
+
+## 11.4 Notas de calidad de datos
+
+- `grado_estudios_ord` en LIX tiene promedio 1.49 (vs ~4 en otras) — probable error de captura.
+- 10.2% nulos en `edad_al_tomar_cargo` — mecanismo MNAR confirmado (AUC predictivo=0.821, ver §2.2.1b). Imputación por media de legislatura introduce sesgo de dirección no corregible con el flag `edad_missing`.
+- ERA\_4 n=500 — interpretar con cautela todos los resultados de Morena.
+- 625 registros son reelecciones válidas — no son leakage entre eras.

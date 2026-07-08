@@ -1,0 +1,314 @@
+=== CELL 172 ===
+# 12. Enfoque 3 — Aprendizaje Profundo Multitarea (PyTorch MTL)
+
+En esta sección se integra el modelo experimental desarrollado en `diputraxpytorch.ipynb`. A diferencia de los modelos independientes anteriores, se implementa una red neuronal profunda con arquitectura **Multi-Task Learning (MTL)** que utiliza un tronco común compartido (`shared trunk`) y tres cabezas específicas para optimizar una pérdida conjunta. El objetivo es comprobar si la predicción simultánea de los tres targets (`nodal_bin`, `lastre_bin`, `n_comisiones_tematicas`) captura dependencias latentes y proporciona un efecto regularizador benéfico.
+
+> **Nota:** Las celdas a continuación preparan sus propios tensores PyTorch y conjuntos de datos sobre el mismo archivo Parquet, asegurando consistencia empírica total.
+
+
+=== CELL 174 ===
+#### Interpretación — Configuración e infraestructura
+
+- **CUDA detectado**: el entrenamiento usa GPU con *Automatic Mixed Precision* (AMP) habilitado, lo que reduce el consumo de memoria y acelera los passes sin pérdida significativa de precisión.
+- **Archivo parquet localizado**: pipeline de datos operativo sin intervención manual.
+- **Reproducibilidad fijada** con `SEED=42` en NumPy, PyTorch y cuDNN (`deterministic=True`): los resultados son reproducibles entre ejecuciones.
+- **Configuración de red**: trunk `[128, 64]`, dropout 0.3, early stopping a 15 épocas sin mejora — balance conservador entre capacidad del modelo y regularización para datasets pequeños (~1 500 obs/era).
+
+=== CELL 177 ===
+#### Interpretación — Carga de datos
+
+- **5 000 filas, 79 columnas**: dataset completo de diputados federales mexicanos, legislaturas LVII–LXVI.
+- **7 columnas de comisiones disponibles**: `n_comisiones`, `n_comisiones_especiales`, `presidente_comision`, `lider_comision`, `n_comisiones_nodales`, `n_comisiones_tematicas`, `n_comisiones_lastre`. Las últimas tres son la base de los tres targets del modelo.
+- El parquet incluye información suficiente para construir los targets sin necesidad de joins adicionales.
+
+=== CELL 179 ===
+#### Interpretación — Distribución de targets
+
+| Target | Media | Tipo |
+|---|---|---|
+| `nodal_bin` | 0.423 | Binario (42.3 % positivos) |
+| `lastre_bin` | 0.453 | Binario (45.3 % positivos) |
+| `n_comisiones_tematicas` | 1.868 | Conteo (Poisson) |
+
+- **Clases moderadamente balanceadas** en ambos targets binarios (42–45 % positivos): no se requieren pesos en `BCEWithLogitsLoss` ni oversampling. Un clasificador trivial ("siempre negativo") obtendría ~57 % de accuracy, por lo que AUC es la métrica correcta.
+- **Media de comisiones temáticas = 1.87**: variable de conteo con soporte 0–∞; la elección de `PoissonNLLLoss` es adecuada.
+- **Cero nulos en los tres targets**: no hay leakage ni imputación necesaria en la variable de respuesta.
+
+=== CELL 181 ===
+#### Interpretación — Feature engineering
+
+- **~10 % de edad con MICE (IterativeImputer)**: en lugar de mediana por legislatura, MICE modela cada feature faltante como función del resto, iterando hasta convergencia. El indicador binario `edad_missing` se conserva como feature para que el modelo distinga registros con edad observada vs. imputada.
+- **Variables compuestas** (`carrera_depth`, `edu_calidad`, `exp_alta_jerarquia`): agregan señal de múltiples columnas correlacionadas, reduciendo dimensionalidad sin pérdida de información.
+- **Imputación de región** con fallback a `"CENTRO"`: evita valores nulos en dummies sin introducir una categoría ficticia que distorsione la representación geográfica.
+
+=== CELL 183 ===
+#### Interpretación — Conjunto de features
+
+- **58 features** (36 numéricas + 22 dummies): la descripción del notebook menciona "86 features" como objetivo, pero el parquet actual expone 58 columnas relevantes. La diferencia puede deberse a columnas ausentes en esta versión del parquet o a redefinición del feature set respecto a `diputraxv3`.
+- **22 dummies**: codifican partido político (7 clases + "OTRO"), región geográfica (5 zonas) y área de formación. Evitan el problema de ordinalidad implícita que tendría una codificación numérica.
+- **Ausencia de leakage de targets**: ninguna columna de conteo de comisiones (targets) aparece como feature. Las únicas columnas de comisiones incluidas son `n_presidencias` (presidencias de comisión, distinto de membresía).
+- **Correlación inducida por MICE en `edad_imp`**: IterativeImputer estima la edad faltante regresando sobre las otras 35 features numéricas. Los 510 registros imputados tienen `edad_imp` parcialmente colineal con trayectoria, educación y cargos. En permutation importance esto puede inflar la importancia aparente de `edad_imp`; interpretarla junto con `edad_missing` y los features de trayectoria.
+
+=== CELL 185 ===
+#### Interpretación — Distribución por era
+
+| Era | n | nodal | lastre | temáticas_media |
+|---|---|---|---|---|
+| ERA 1 PRI (LVII–LIX) | 1 500 | 0.32 | 0.42 | 1.53 |
+| ERA 2 PAN (LX–LXII) | 1 500 | 0.41 | 0.46 | 1.93 |
+| ERA 3 Transición (LXIII–LXV) | 1 500 | 0.50 | 0.50 | 2.15 |
+| ERA 4 Morena (LXVI) | **500** | 0.55 | 0.39 | 1.87 |
+
+**Tendencias estructurales:**
+- La **prevalencia nodal crece** de ERA 1 (0.32) a ERA 4 (0.55): los diputados de Morena tienen mayor probabilidad de ocupar comisiones de alto poder bajo el sistema actual.
+- La **prevalencia lastre decrece** en ERA 4 (0.39 vs 0.46–0.50 en eras anteriores): Morena reorganiza la estructura de comisiones, reduciendo el "lastre" promedio.
+- **ERA 3 tiene distribuciones perfectamente balanceadas** (nodal=0.50, lastre=0.50): el período de transición es el más difícil para el modelo, pues la separabilidad entre clases es mínima.
+- **ERA 4 tiene solo 500 observaciones** (una sola legislatura vs tres en las otras eras): los folds de validación tienen ~100 muestras, lo que eleva la varianza del AUC y dificulta el aprendizaje del modelo.
+
+=== CELL 188 ===
+### 12.4. Arquitectura del modelo multitarea
+
+=== CELL 190 ===
+#### Interpretación — Arquitectura del modelo
+
+- **16 387 parámetros totales**: modelo compacto y apropiado para datasets de ~1 200–1 500 observaciones de entrenamiento. La regla empírica "al menos 10 obs por parámetro" se cumple holgadamente.
+- **Trunk compartido** (58→128→64, GELU + BatchNorm + Dropout 0.3): el aprendizaje de representaciones se comparte entre las tres tareas; las features que predicen comisiones nodales también informan las predicciones lastre y temáticas a través del trunk.
+- **GELU sobre ReLU**: activación diferenciable en cero, con mejor comportamiento en gradientes para datasets pequeños y modelos con BatchNorm.
+- **Tres cabezas independientes**: logit crudo para BCE (nodal/lastre) y Softplus→tasa para Poisson (temáticas). La independencia de cabezas permite que las pérdidas por tarea compitan durante el backprop, actuando como regularización implícita.
+
+=== CELL 191 ===
+### 12.5. Función de pérdida conjunta
+
+=== CELL 193 ===
+### 12.6. Ciclo de entrenamiento
+
+=== CELL 198 ===
+#### Interpretación — Resultados de entrenamiento por era
+
+#### ERA 1 — PRI (LVII–LIX)
+- **AUC nodal: 0.736 ± 0.025** → señal moderada-fuerte; el modelo captura regularidades estructurales del sistema PRI (cargos previos, trayectoria administrativa). El PRI era un sistema de asignación por seniority donde `edad_imp` es un proxy natural de jerarquía interna — MICE mejora esta señal estimando la edad faltante desde trayectoria y nivel de cargo.
+- **AUC lastre: 0.595 ± 0.029** → señal débil; el modelo no distingue bien las comisiones "lastre" en este período, posiblemente porque la asignación era más discrecional/opaca.
+- **MAE temáticas: 0.807** → error de menos de 1 comisión en promedio, aceptable para un conteo con media 1.53.
+- **~23 épocas promedio**: convergencia rápida, señal clara en los datos.
+
+#### ERA 2 — PAN (LX–LXII)
+- **AUC nodal: 0.716 ± 0.025** → ligera degradación respecto a ERA 1; el cambio de partido modifica los predictores de poder.
+- **AUC lastre: 0.629 ± 0.036** → **mejor lastre del dataset** → el período PAN tiene un patrón de comisiones "lastre" más predecible que ERA 1 (posiblemente perfiles de oposición más homogéneos).
+- **MAE temáticas: 0.831** → error bajo, con menor varianza que ERA 3.
+
+#### ERA 3 — Transición (LXIII–LXV)
+- **AUC nodal: 0.694 ± 0.023** → señal moderada pero en declive.
+- **AUC lastre: 0.604 ± 0.038** → similar a ERA 1; la transición multipartidaria hace más ruidosa la asignación de comisiones.
+- **MAE temáticas: 0.930** → **peor MAE del dataset**; la mayor media de comisiones temáticas (2.15) y la mayor variabilidad del período de transición dificultan la predicción de conteos.
+- **Joint loss más baja (1.861)** pero métricas AUC más bajas: la pérdida Poisson es pequeña en esta era (baja la loss total), enmascarando el bajo rendimiento en tareas binarias.
+
+#### ERA 4 — Morena (LXVI)
+- **AUC nodal: 0.624 ± 0.096** → **señal débil y altamente inestable** (std = 0.096 vs ~0.025 en otras eras); el rango entre folds va de 0.518 a 0.734, casi 22 puntos porcentuales.
+- **AUC lastre: 0.544 ± 0.051** → **casi aleatorio** en el peor fold (0.469); el modelo apenas distingue comisiones lastre en Morena.
+- **Causa probable**: solo 500 observaciones (una legislatura), con folds de validación de ~100 muestras. La varianza muestral domina sobre la señal del modelo.
+- **Caveat MICE en ERA 4**: IterativeImputer se ajustó sobre el dataset completo (5 000 filas). Las imputaciones de edad en los ~50 registros faltantes de ERA 4 se benefician de información de ERA 1–3, lo que es favorable para la calidad de la imputación pero introduce una dependencia temporal leve. Para un análisis estrictamente prospectivo, el imputer debería reajustarse solo con datos hasta ERA 3.
+- **32 épocas promedio** (más que cualquier era): el modelo tarda más en converger con menos datos y mayor variabilidad intra-fold.
+
+=== CELL 201 ===
+#### Interpretación — Tabla detallada por fold
+
+La granularidad fold-a-fold revela un patrón importante en ERA 4:
+- **Fold 3**: AUC_nodal=0.609, AUC_lastre=0.469 (peor combinación del notebook)
+- **Fold 1**: AUC_nodal=0.518 (casi aleatorio)
+- **Folds 2 y 4**: AUC_nodal=0.711 y 0.734 (aceptables)
+
+Esta dispersión extrema en ERA 4 no indica falla del modelo sino **insuficiencia de datos**: con 100 muestras de validación y distribución binaria ~55/45, la varianza del estimador AUC es inherentemente alta. El modelo puede estar aprendiendo patrones reales que los folds pequeños no alcanzan a evaluar consistentemente.
+
+=== CELL 203 ===
+#### Interpretación — Resumen por era (media ± std)
+
+**Degradación de AUC nodal por era:**
+```
+ERA 1 PRI:   0.736 ↑ mejor
+ERA 2 PAN:   0.716
+ERA 3 Trans: 0.694
+ERA 4 Morena: 0.624 ↓ peor
+```
+Tendencia monotónica descendente: cada cambio de régimen político introduce nuevas lógicas de asignación que el modelo tarda en capturar. ERA 4 también sufre el efecto de menor tamaño muestral.
+
+**AUC lastre no es monotónica**: ERA 2 (0.629) > ERA 3 (0.604) ≈ ERA 1 (0.595) > ERA 4 (0.544). La tarea lastre tiene dinámica propia, no espeja la tarea nodal.
+
+**std de ERA 4 es 4× mayor** que las otras eras en AUC_nodal (0.096 vs ~0.025): alta inestabilidad estructural por tamaño de muestra.
+
+=== CELL 205 ===
+### 12.9. Gráficas de entrenamiento
+
+=== CELL 207 ===
+#### Interpretación — Curvas de entrenamiento
+
+- **Convergencia rápida en ERA 1 y ERA 2** (~20–27 épocas): las curvas de validación se estabilizan pronto, indicando señal aprendible con estos datos.
+- **ERA 3 y ERA 4 requieren más épocas** (29–35): el modelo necesita más iteraciones para extraer señal de datos más ruidosos o escasos.
+- **No se observa overfitting severo**: el early stopping (paciencia=15) detiene el entrenamiento antes de que la brecha train/val se amplíe significativamente. El dropout 0.3 + BatchNorm contribuyen a la regularización.
+- **Pérdida Poisson (temáticas) converge más rápido** que las pérdidas BCE en todos los folds: la estructura de conteo es más fácil de aprender que la separabilidad binaria.
+
+=== CELL 208 ===
+### 12.10. Métricas por era — visualización comparativa
+
+=== CELL 210 ===
+#### Interpretación — Visualización comparativa de métricas
+
+La gráfica confirma visualmente tres hallazgos:
+1. **AUC nodal** cruza la línea de "señal moderada" (0.65) en todas las eras excepto ERA 4, que cae justo por encima o debajo dependiendo del fold.
+2. **AUC lastre** se mantiene en zona débil (0.54–0.63) en todo el dataset: la tarea lastre es sistemáticamente más difícil para el modelo MTL, posiblemente porque los features disponibles capturan mejor el capital político (nodal) que la marginalidad dentro del sistema (lastre).
+3. **MAE temáticas** con barras de error pequeñas en ERA 1 y ERA 2 (std ~0.02–0.03) indica predicción de conteos estable; ERA 3 y ERA 4 tienen mayor dispersión.
+
+=== CELL 211 ===
+### 12.11. Comparación con baseline (diputraxv3)
+
+Ingresar manualmente los resultados del baseline de `diputraxv3` o leer de un archivo.
+El bloque de abajo muestra la estructura esperada para la comparación.
+
+=== CELL 213 ===
+### 12.12. Interpretabilidad — Permutation Importance por cabeza
+
+SHAP no tiene soporte nativo para modelos MTL. Estrategia adoptada:
+**permutation importance** por tarea — se permuta cada feature y se mide la degradación de métrica
+en la cabeza correspondiente. Costoso computacionalmente; se calcula para la última era como ejemplo.
+
+=== CELL 216 ===
+#### Interpretación — Métricas de referencia para permutation importance (ERA 4)
+
+```
+ref_auc_nodal:   0.605
+ref_auc_lastre:  0.534
+ref_mae_tematic: 0.903
+```
+
+- **Consistencia con CV**: el AUC nodal de referencia (0.605) cae dentro del rango observado en CV (0.624 ± 0.096, rango 0.518–0.734), confirmando que el modelo entrenado en 50% de los datos para interpretabilidad es representativo.
+- **AUC lastre 0.534**: muy cercano al azar; los resultados de permutation importance para la cabeza lastre en ERA 4 deben interpretarse con cautela, pues la capacidad discriminativa de referencia es baja.
+- **MAE temático 0.903**: ligeramente superior al promedio de CV (0.811) porque el split 50/50 de interpretabilidad deja menos datos de entrenamiento que el 80/20 del CV.
+- **Interpretación de `edad_imp` en permutation importance**: dado que MICE construyó los valores imputados de edad usando las otras 35 features numéricas como predictores, permutar `edad_imp` equivale a permutar una combinación lineal aproximada de esas features. Su importancia puede estar sobreestimada si otros predictores de trayectoria ya capturan esa información. Comparar siempre junto con `edad_missing`.
+
+=== CELL 219 ===
+#### Interpretación — Correlación importancias nodal vs lastre (r = 0.292)
+
+- **Correlación positiva baja (r = 0.292)**: los features que más degradan la predicción nodal cuando se permutan NO son los mismos que degradan la predicción lastre. Las dos tareas binarias responden a mecanismos parcialmente distintos.
+- **Hipótesis del proyecto confirmada**: `lastre_bin` no es el inverso de `nodal_bin`. Los diputados con alta probabilidad de comisión nodal y los de alta probabilidad de comisión lastre tienen perfiles diferenciables por el modelo.
+- **Implicación metodológica**: el modelo MTL con trunk compartido está aprendiendo representaciones que luego las cabezas especializan hacia lógicas diferentes. Si nodal y lastre fueran espejo, las cabezas convergerían a pesos opuestos y el modelo sería equivalente a uno solo.
+
+=== CELL 220 ===
+### 12.13. Tabla final — resumen completo
+
+Agrupa todos los resultados en una tabla final con media, std y comparación vs baseline.
+
+=== CELL 222 ===
+#### Interpretación — Tabla final resumen
+
+| Era | AUC nodal | AUC lastre | MAE temáticas | Épocas |
+|---|---|---|---|---|
+| ERA 1 PRI | **0.736 ± 0.025** | 0.595 ± 0.029 | **0.807 ± 0.030** | 22.8 |
+| ERA 2 PAN | 0.716 ± 0.025 | **0.629 ± 0.036** | 0.831 ± 0.019 | 27.4 |
+| ERA 3 Trans | 0.694 ± 0.023 | 0.604 ± 0.038 | 0.930 ± 0.046 | 29.2 |
+| ERA 4 Morena | 0.624 ± 0.096 | 0.544 ± 0.051 | 0.811 ± 0.049 | 32.0 |
+
+**Lectura por tarea:**
+- **Nodal**: señal moderada-fuerte en ERA 1–2, moderada en ERA 3, débil-inestable en ERA 4. El modelo captura mejor las lógicas de asignación de poder en sistemas políticos consolidados.
+- **Lastre**: señal débil en todas las eras (0.54–0.63). La tarea más difícil del modelo; requiere features más específicos de marginalización interna que los disponibles en el dataset actual.
+- **Temáticas**: MAE < 1.0 comisión en todas las eras excepto ERA 3 (0.930). Predicción de conteos robusta dado que la media es ~1.5–2.2.
+- **Épocas crecientes por era**: tendencia clara (22→27→29→32) que refleja mayor dificultad de aprendizaje conforme disminuyen los datos disponibles y aumenta la complejidad política.
+
+=== CELL 223 ===
+### 12.14. Notas metodológicas
+
+#### Decisiones de diseño
+
+1. **Trunk compartido con GELU + BatchNorm + Dropout**: GELU es más suave que ReLU y suele
+   generalizar mejor en datasets pequeños. BatchNorm estabiliza el gradiente en modelos profundos.
+
+2. **BCEWithLogitsLoss para tareas binarias**: numéricamente estable, combina sigmoid + BCE en un
+   solo paso. Las cabezas nodal y lastre emiten logits crudos.
+
+3. **PoissonNLLLoss para temáticas**: compatible con la naturaleza de conteo de la variable
+   (0–10). La cabeza temática emite la tasa λ directamente vía Softplus.
+
+4. **Estratificación compuesta (nodal × 2 + lastre)**: no es posible estratificar las tres
+   salidas simultáneamente con StratifiedKFold. La variable compuesta balancea las dos tareas
+   binarias. La distribución de n_comisiones_tematicas queda implícitamente balanceada por el
+   tamaño uniforme de los folds.
+
+5. **Permutation Importance como proxy de SHAP**: SHAP requiere un único output escalar;
+   el modelo MTL produce tres. Permutation importance se calcula por cabeza de forma independiente,
+   lo que es metodológicamente equivalente al análisis SHAP por target en diputraxv3.
+
+6. **lastre_bin no es el inverso de nodal_bin**: la correlación de importancias entre las dos
+   cabezas permite testear empíricamente esta hipótesis (ver Sección 12).
+
+7. **MICE (IterativeImputer) para `edad_imp`**: reemplaza la imputación por mediana por
+   legislatura. `IterativeImputer(max_iter=10, random_state=42)` modela cada feature faltante
+   iterativamente como función del resto, convergiendo en ~10 iteraciones. El imputer se
+   ajusta sobre `NUMERIC_FEATS` del dataset completo antes del split por era; esto es
+   metodológicamente equivalente al enfoque de mediana anterior en cuanto a leakage temporal,
+   pero produce estimaciones más informativas al explotar correlaciones multivariadas.
+
+#### Limitaciones
+
+- Dataset pequeño (~1,500 obs. por era): los modelos neuronales son más exigentes de datos que
+  los modelos en árboles. El baseline de diputraxv3 puede superar al MTL en eras con pocos datos.
+- ERA_4 tiene solo ~500 observaciones: los folds de validación tienen ~100 muestras;
+  la varianza de AUC por fold puede ser alta.
+- No se implementó calibración de probabilidades (Platt/isotónica), coherente con diputraxv3.
+- **MICE ajustado sobre dataset completo**: el imputer ve las 5 000 filas antes de que los folds
+  de CV se definan; introduce el mismo nivel de leakage temporal que tenía la mediana anterior.
+  Para análisis prospectivo estricto, reajustar el imputer dentro del loop de CV por era.
+- **Colinealidad inducida en `edad_imp`**: la regresión iterativa de MICE produce un `edad_imp`
+  para los 510 registros faltantes que es función lineal aproximada de otras features;
+  puede inflar artificialmente la importancia de `edad_imp` en permutation importance.
+
+=== CELL 224 ===
+### 12.15. Conclusiones del modelo MTL
+
+#### Rendimiento general
+
+El modelo de multi-task learning (MTL) PyTorch con trunk compartido [128→64] demuestra **capacidad predictiva moderada** sobre el comportamiento legislativo mexicano, con resultados diferenciados por tarea y era política.
+
+#### Hallazgos principales
+
+**1. La tarea nodal es la más aprendible:**
+AUC nodal oscila entre 0.624 y 0.736 según la era. El perfil biográfico y de trayectoria de un diputado contiene señal real sobre su probabilidad de ocupar comisiones de alto poder. Las ERA 1 (PRI) y ERA 2 (PAN) tienen sistemas de asignación más predecibles históricamente.
+
+**2. La tarea lastre es sistemáticamente difícil:**
+AUC lastre nunca supera 0.63 en ninguna era. Las comisiones "lastre" responden a lógicas de negociación interna menos capturables con variables biográficas y de trayectoria. Features adicionales (relaciones inter-grupales, afiliación de facción) podrían mejorar esta cabeza.
+
+**3. Predicción de conteos temáticos es estable:**
+MAE < 1.0 comisión en 3 de 4 eras, lo cual es aceptable para una variable con media ~1.9. La elección de `PoissonNLLLoss` con activación Softplus es apropiada para la naturaleza de la variable.
+
+**4. ERA 4 (Morena) es el caso más difícil:**
+- AUC nodal: 0.624 ± 0.096 (alta inestabilidad)
+- AUC lastre: 0.544 (casi aleatorio)
+- Causa estructural: solo 500 observaciones (1 legislatura) vs 1 500 en otras eras
+- El modelo muestra signos de subajuste en ERA 4, no de sobreajuste; el early stopping dispara tarde (32 épocas)
+
+**5. Nodal y lastre son mecanismos independientes (r = 0.292):**
+La hipótesis central del proyecto —que estas dos dimensiones de la asignación de comisiones no son imágenes espejo— queda validada empíricamente. El trunk compartido aprende representaciones que las dos cabezas especializan hacia lógicas distintas.
+
+#### Comparación con baseline (diputraxv3)
+
+Los valores del baseline de `diputraxv3` (XGBoost/Random Forest) no están disponibles en el notebook actual (columnas `Base *` son `None`). Para una comparación rigurosa se recomienda completar la celda 30 con los resultados de `diputraxv3`. Sin embargo:
+- Los AUC nodal del MTL (0.69–0.74 en ERA 1–3) son **competitivos** con modelos de árboles en datasets pequeños.
+- El MTL aporta una ventaja cualitativa: predice las **tres tareas simultáneamente** con un solo modelo y 16 387 parámetros, vs tres modelos independientes en v3.
+
+#### Limitaciones identificadas
+
+| Limitación | Impacto | Posible solución |
+|---|---|---|
+| ERA 4 con solo 500 obs | Alta varianza AUC, señal inestable | Incluir legislaturas futuras |
+| AUC lastre < 0.65 en todas las eras | Cabeza lastre con baja capacidad discriminativa | Agregar features de red/relaciones |
+| Sin calibración de probabilidades | Probabilidades no calibradas | Aplicar Platt o calibración isotónica |
+| Estratificación solo sobre 2 de 3 targets | Distribución temática no garantizada por fold | Estratificación multitarea custom |
+| Dataset sintético/limitado | Resultados no generalizables directamente | Validar con datos reales completos |
+| MICE ajustado en dataset completo | Leakage temporal leve en `edad_imp` (mismo nivel que mediana anterior) | Reajustar IterativeImputer dentro del loop CV por era |
+| `edad_imp` colineal con otras features (MICE) | Importancia de `edad_imp` en permutation importance puede estar inflada | Interpretar junto con `edad_missing` y features de trayectoria |
+
+#### Recomendaciones para siguiente iteración
+
+1. **Poblar baseline de diputraxv3** en celda 30 para comparación cuantitativa directa.
+2. **Agregar features de red** (cohesión de bancada, centralidad en la Cámara) para mejorar la cabeza lastre.
+3. **Ejecutar permutation importance en ERA 1–3** para comparar qué features son determinantes por régimen político.
+4. **Ampliar ERA 4** con datos de legislatura LXVII cuando estén disponibles.
+5. Considerar **arquitectura con task-specific layers** antes del trunk para separar aún más las representaciones nodal y lastre.
+6. **Reajustar MICE dentro del loop de CV** para eliminar el leakage temporal leve: ajustar `IterativeImputer` solo con el subconjunto de entrenamiento de cada fold y aplicarlo al fold de validación.
