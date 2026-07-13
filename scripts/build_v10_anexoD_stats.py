@@ -122,7 +122,7 @@ def get_Xy(era, target):
     y = df_enc.loc[mask, target].astype(float).reset_index(drop=True)
     return X, y
 
-_L1_PARAMS = dict(penalty='l1', solver='liblinear', C=0.1, max_iter=3000,
+_L1_PARAMS = dict(l1_ratio=1, solver='liblinear', C=0.1, max_iter=3000,
                   class_weight='balanced', random_state=42)
 
 def sfm_report(X, y):

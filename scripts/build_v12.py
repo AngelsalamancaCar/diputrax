@@ -226,9 +226,10 @@ NUMERIC_FEATS = [
     "sexo_bin", "edad_imp", "edad_missing",
     "mayoria_relativa", "es_partido_mayoria", "legislatura_num",
     "grado_estudios_ord", "tiene_posgrado", "tiene_doctorado",
-    "estudios_en_extranjero", "univ_publica", "univ_privada", "univ_extranjera",
+    "estudios_en_extranjero", "univ_publica", "univ_privada",  # AC1(v0): univ_extranjera eliminada — duplicado exacto (r=1.0)
     "univ_elite",
-    "n_cargos_legislativos_prev", "fue_diputado_local",
+    # AC1(v0): n_cargos_legislativos_prev eliminada — = fue_diputado_local+fue_diputado_federal+fue_senador (combinacion lineal exacta)
+    "fue_diputado_local",
     "fue_diputado_federal", "fue_senador", "n_trayectoria_legislativa",
     "n_trayectoria_admin", "nivel_cargo_max",
     "fue_presidente_mun", "fue_presidente_org", "fue_director_general",
@@ -249,8 +250,19 @@ FEAT_COLS = NUMERIC_FEATS + DUMMY_FEATS
 print(f"Features totales: {len(FEAT_COLS)}  "
       f"(numéricas={len(NUMERIC_FEATS)}, dummies={len(DUMMY_FEATS)})")"""))
 
+cells.append(md(r"""## Acciones correctivas (derivadas de diputraxv0)
+
+Se propagan a este cuaderno las acciones correctivas aplicadas en diputraxv10, derivadas del diagnóstico de supuestos de `diputraxv0` (§8 y §12):
+
+- **AC1 — Consolidación de features redundantes.** Se elimina `univ_extranjera` (duplicado exacto de `estudios_en_extranjero`, r=1.0) y `n_cargos_legislativos_prev` (suma exacta de `fue_diputado_local + fue_diputado_federal + fue_senador`, ya incluidos). Son redundancias *dentro del espacio-columna*: el AUC/MAE es invariante a su eliminación; solo se depura la atribución SHAP y los VIF.
+- **AC2 — Validación sin fuga por reelección.** Se añaden `get_groups()` (por `diputado_id`) y `cv_auc_grouped` / `cv_mae_grouped` (`StratifiedGroupKFold` / `GroupKFold`) para estimar el desempeño sin que un mismo diputado reelecto quede en train y test del mismo fold.
+
+**No aplica aquí:** AC1b (reindexado de `KEY_FEATS`) — v12 no define `KEY_FEATS`.
+
+**Límite interpretativo (v0 §6, §8):** en eras de partido dominante `es_partido_mayoria` es casi colineal con la identidad partidista (VIF≈129 en ERA_4); su lectura debe ser asociativa, no causal."""))
+
 cells.append(code(r"""# --- Model factories idénticas a v10 (celda 78) ---
-_L1_PARAMS = dict(penalty='l1', solver='liblinear', C=0.1, max_iter=3000,
+_L1_PARAMS = dict(l1_ratio=1, solver='liblinear', C=0.1, max_iter=3000,
                   class_weight='balanced', random_state=42)
 
 def lr_binary():
@@ -280,6 +292,27 @@ def cv_auc(model, X, y, k=5):
 # las eras conservan ERA_COLORS de v10)
 SCHEME_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948"]
 TXT = "#333333"
+# -- AC2(v0): validacion sin fuga por reeleccion (agrupada por diputado_id) --
+# get_groups usa diputado_id como clave para que un mismo diputado reelecto
+# no caiga en train y test del mismo fold (fuga por reeleccion).
+from sklearn.model_selection import StratifiedGroupKFold, GroupKFold
+
+def get_groups(era):
+    mask = df_enc["era"] == era
+    if "diputado_id" in df_enc.columns:
+        return df_enc.loc[mask, "diputado_id"].reset_index(drop=True)
+    return pd.Series(range(int(mask.sum())))
+
+def cv_auc_grouped(model, X, y, groups, k=5):
+    cv = StratifiedGroupKFold(n_splits=k, shuffle=True, random_state=42)
+    s = cross_val_score(model, X, y, groups=groups, cv=cv, scoring="roc_auc")
+    return s.mean(), s.std()
+
+def cv_mae_grouped(model, X, y, groups, k=5):
+    cv = GroupKFold(n_splits=k)
+    s = -cross_val_score(model, X, y, groups=groups, cv=cv, scoring="neg_mean_absolute_error")
+    return s.mean(), s.std()
+
 print("Infraestructura de modelado replicada de v10 — OK")"""))
 
 # ========================================================================
