@@ -18,7 +18,8 @@ setup: $(VENV)/bin/activate install kernel ## Create venv, install deps, registe
 install: $(VENV)/bin/activate ## Install Python dependencies
 	$(PIP) install --upgrade pip
 	$(PIP) install pandas numpy matplotlib seaborn jupyterlab ipykernel \
-	               scikit-learn xgboost shap statsmodels scipy
+	               scikit-learn xgboost shap statsmodels scipy \
+	               pyarrow openpyxl
 
 kernel: ## Register venv as Jupyter kernel named 'diputrax'
 	$(PYTHON) -m ipykernel install --user --name diputrax --display-name "diputrax"
