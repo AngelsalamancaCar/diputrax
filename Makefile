@@ -15,11 +15,9 @@ $(VENV)/bin/activate:
 
 setup: $(VENV)/bin/activate install kernel ## Create venv, install deps, register kernel
 
-install: $(VENV)/bin/activate ## Install Python dependencies
+install: $(VENV)/bin/activate ## Install Python dependencies (pinned in requirements.txt; incl. pymc/arviz/torch for v10's Bayesian/PyTorch appendices)
 	$(PIP) install --upgrade pip
-	$(PIP) install pandas numpy matplotlib seaborn jupyterlab ipykernel \
-	               scikit-learn xgboost shap statsmodels scipy \
-	               pyarrow openpyxl
+	$(PIP) install -r requirements.txt
 
 kernel: ## Register venv as Jupyter kernel named 'diputrax'
 	$(PYTHON) -m ipykernel install --user --name diputrax --display-name "diputrax"

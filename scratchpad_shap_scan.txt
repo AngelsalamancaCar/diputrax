@@ -1,0 +1,1665 @@
+==== cell 3 markdown hits ['shap']
+# 1.2 Objetivos y criterios de éxito
+
+## Objetivo primario
+
+Determinar si el perfil biográfico, educativo y de trayectoria de un diputado federal predice el tipo de comisión al que es asignado, y en qué medida ese poder predictivo varía entre épocas políticas.
+
+## Objetivos secundarios
+
+- Identificar qué dimensiones del perfil —trayectoria administrativa, filiación partidaria, experiencia legislativa previa, nivel educativo— tienen mayor peso predictivo en cada era.
+- Evaluar si la lógica de asignación de comisiones lastre es el inverso de la lógica nodal, o si responde a mecanismos institucionales independientes.
+- Caracterizar el perfil prototípico del diputado con mayor probabilidad de recibir comisión nodal en cada era y documentar su evolución a lo largo del tiempo.
+- Medir la transferencia temporal del modelo: si el perfil aprendido en una era predice con precisión la siguiente.
+
+#
+----
+==== cell 5 markdown hits ['shap']
+# 1.4 Criterios de interpretabilidad del modelo
+
+La interpretabilidad es un requisito central del proyecto, dado que el objetivo no es solo predecir sino entender qué perfil es valorado en cada época política. Los criterios operativos son:
+
+## Métricas de desempeño
+
+Para comisiones nodales y lastre —clasificación binaria— se utiliza AUC bajo validación cruzada estratificada de 5 pliegues (*5-fold*), interpretado en una escala que va de 0.50 —aleatorio— a valores superiores a 0.75 —señal fuerte—. Un AUC entre 0.65 y 0.75 se considera señal moderada: el perfil importa, pero no determina la asignación.
+
+Para comisiones temáticas —regresión de conteo— se utiliza MAE comparado contra el *baseline* de predecir siempre la media. Una mejora inferior al 5% se considera nula.
+
+## Atribución de importancia
+
+Los valores SHAP (*SHapley Additive exPlanations*) cuantifican la contribución individual de
+----
+==== cell 6 markdown hits ['shap', 'log-odd', 'log-conteo', 'poisson', 'explainer']
+# 1.5 Alcance del proyecto
+
+El proyecto cubre:
+
+- **Sujeto:** diputadas y diputados federales de la Cámara de Diputados del Congreso de la Unión de México, legislaturas LVII–LXVI.
+- **Variables explicativas:** perfil biográfico observable en el SIL —trayectorias administrativa, política y legislativa; formación académica; filiación partidaria; tipo de elección, sea mayoría relativa o representación proporcional.
+- **Variables objetivo:** asignación a comisión nodal —binaria—, asignación a comisión lastre —binaria— y número de comisiones temáticas recibidas —conteo—.
+- **Período analítico:** cuatro eras definidas a partir del partido con mayoría parlamentaria: ERA_1 PRI —57–59—, ERA_2 PAN —60–62—, ERA_3 Transición —63–65—, ERA_4 Morena —66—.
+- **Enfoque metodológico:** Regresión Logística L1 en dos configuraciones sobre cada combinación de era y variable objetivo binaria, complementada po
+----
+==== cell 11 code hits ['shap']
+# =========================
+# Importación de dependencias y carga de datos
+# =========================
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from IPython.display import display, HTML
+
+sns.set_theme(style="whitegrid", context="talk", palette="deep")
+plt.rcParams["figure.figsize"] = (12, 7)
+plt.rcParams["axes.titlesize"] = 16
+plt.rcParams["axes.labelsize"] = 12
+plt.rcParams["legend.frameon"] = False
+pd.set_option("display.max_columns", 100)
+
+PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+DATA_PATH = PROJECT_ROOT / "data" / "clean" / "diputados_20260421_205712.parquet"
+
+if not DATA_PATH.exists():
+    raise FileNotFoundError(f"No existe archivo parquet: {DATA_PATH}")
+
+df = pd.read_parquet(DATA_PATH).copy()
+print(f"Fuente de datos: {DATA_PAT
+----
+==== cell 17 code hits ['shap', 'coef_', 'predict_proba']
+# ============================================================
+# MECANISMO DE VALORES FALTANTES — edad_al_tomar_cargo
+# MCAR / MAR / MNAR
+# ============================================================
+from scipy import stats
+from sklearn.metrics import roc_auc_score
+import warnings
+warnings.filterwarnings('ignore')
+
+plot_df['edad_missing'] = plot_df['edad_al_tomar_cargo'].isna().astype(int)
+
+# ── 1. Tasa de nulos por era y por partido ──────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+miss_era = (
+    plot_df.groupby('era_label')['edad_missing']
+    .mean().mul(100).reset_index()
+    .rename(columns={'edad_missing': 'pct_missing'})
+)
+sns.barplot(data=miss_era, x='era_label', y='pct_missing',
+            palette=list(era_colors.values()), ax=axes[0])
+axes[0].set_title('% faltante en edad_al_tomar_cargo por época')
+axes[0].set_xlabel('')
+axes[0].set_ylabel('% faltante'
+----
+==== cell 21 markdown hits ['shap']
+### Interpretación — Mecanismo de valores faltantes en `edad_al_tomar_cargo`: diagnóstico MNAR
+
+**Veredicto:** MNAR confirmado, severidad alta.
+
+---
+
+#### Prueba 1 — Distribución de nulos por era y legislatura: MCAR descartado
+
+La tasa de valores nulos varía de **0.8 %** en la LXVI a **28.0 %** en la LXIII entre legislaturas.
+
+Por era, la distribución es la siguiente:
+
+| Era | Tasa de nulos |
+|---|---:|
+| ERA_1 | 10.4 % |
+| ERA_2 | 4.5 % |
+| ERA_3 | 18.9 % |
+| ERA_4 | 0.8 % |
+
+La heterogeneidad es demasiado extrema para ser aleatoria. La **ERA_3** concentra el problema por la migración de plataforma del SIL en las legislaturas LXIII–LXV. Por tanto, el supuesto **MCAR** queda descartado.
+
+---
+
+#### Prueba 2 — Comparación de perfil: todos los deltas negativos y significativos
+
+Los **510 registros sin edad** presentan trayectorias sistemáticamente menores que los **4,490 registros con dato*
+----
+==== cell 48 markdown hits ['shap']
+### Interpretación — Indicadores de universidad principales por época
+
+| Institución | ERA_1 PRI | ERA_2 PAN | ERA_3 Trans. | ERA_4 Morena |
+|---|---:|---:|---:|---:|
+| UNAM | 22.4 % | 12.3 % | 7.7 % | 6.6 % |
+| IBERO | 6.7 % | 5.3 % | 4.6 % | 3.4 % |
+| ITESM | 6.3 % | 6.8 % | 4.9 % | 3.0 % |
+| IPN | 4.7 % | 2.8 % | 1.4 % | 1.0 % |
+| ITAM | 4.4 % | 3.2 % | 2.0 % | 1.8 % |
+| UDG | 3.5 % | 3.4 % | 2.9 % | 2.6 % |
+
+#### Primera época
+
+La UNAM domina con **22.4 %** de la Cámara, el pico histórico de la serie. El ITAM también alcanza su máximo en **ERA_1** (4.4 %), no en ERA_2 como podría suponerse del perfil panista.
+
+El PRI hegemónico reclutaba simultáneamente desde la UNAM y desde el ITAM, reflejo de la coexistencia de un ala populista y un ala tecnocrática dentro del mismo partido.
+
+#### Segunda época
+
+El ITESM (no el ITAM) alcanza su pico histórico, con **6.8 %**, lo que representa un in
+----
+==== cell 53 markdown hits ['shap']
+**Interpretación — Experiencia administrativa previa por época**
+
+La presidencia municipal es el cargo ejecutivo previo más frecuente en todas las épocas, pero su peso relativo y el de otros cargos cambia:
+
+- **Primera época:** la presidencia municipal y los cargos de dirección en organizaciones (sindicatos, cámaras) son dominantes, reflejando la estructura corporativa del PRI.
+- **Segunda época:** crece la fracción de ex secretarios y subsecretarios; el PAN reclutó más intensamente de la burocracia federal tecnocrática.
+- **Tercera época:** se mantiene la presidencia municipal como vía principal; Morena construye desde gobiernos locales y movimientos sociales.
+- **Cuarta época:** la fracción con cargos de dirección general y secretarías cae ligeramente; se diversifica el origen administrativo.
+
+Este patrón es consistente con los hallazgos SHAP: n_trayectoria_admin es el predictor más po
+----
+==== cell 68 markdown hits ['shap', 'poisson']
+# 4.1 Diseño del estudio y lógica temporal por eras
+
+## Pregunta de investigación
+
+¿El perfil biográfico, educativo y de trayectoria de un diputado predice a qué tipo de comisión es asignado, y ese perfil ha cambiado entre épocas políticas?
+
+---
+
+## Tipología de comisiones
+
+| Tipo | Definición operacional | Implicación política |
+|---|---|---|
+| Nodal | ≥1 comisión nodal (presupuesto, hacienda, seguridad) | Alta influencia · cargo de confianza del grupo mayoritario |
+| Lastre | ≥1 comisión lastre (sin recursos ni dictámenes) | Marginalización · oposición o primíparos sin red |
+| Temática | Conteo de comisiones temáticas (0–10) | Especialización · volumen de trabajo legislativo |
+
+---
+
+## Épocas y distribución de datos
+
+| Época | Legislaturas | Régimen | n | Tasa nodal | Tasa lastre | Media temáticas |
+|---|---|---|---:|---:|---:|---:|
+| ERA_1 | 57–59 | PRI hegemónico | 1500 | 32.2 % | 42
+----
+==== cell 69 code hits ['shap', 'poisson']
+import warnings
+warnings.filterwarnings("ignore")
+
+import io
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+from pathlib import Path
+from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score
+from sklearn.metrics import roc_auc_score, mean_absolute_error
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import SelectFromModel
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression, PoissonRegressor
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
+import shap
+
+----
+==== cell 72 code hits ['shap']
+raw = pd.read_parquet(PARQUET)
+print(f"Shape: {raw.shape}")
+raw[["legislatura_num", "partido", "es_partido_mayoria",
+     "n_comisiones_nodales", "n_comisiones_tematicas", "n_comisiones_lastre"]].head(3)
+----
+==== cell 78 code hits ['shap', 'poisson']
+def get_Xy(era, target):
+    mask = df_enc["era"] == era
+    X = df_enc.loc[mask, FEAT_COLS].astype(float).reset_index(drop=True)
+    y = df_enc.loc[mask, target].astype(float).reset_index(drop=True)
+    return X, y
+
+def spw(y):
+    """scale_pos_weight para XGBoost (ratio neg/pos)."""
+    n0 = float((y == 0).sum())
+    n1 = float((y == 1).sum())
+    return n0 / max(n1, 1.0)
+
+# Model factories (Frecuentista e Inferencia Clásica/Bayesiana)
+_L1_PARAMS = dict(l1_ratio=1, solver='liblinear', C=0.1, max_iter=3000,
+                  class_weight='balanced', random_state=42)
+
+def lr_binary():
+    """LR L1 (Lasso) completo."""
+    return Pipeline([
+        ("sc", StandardScaler()),
+        ("lr", LogisticRegression(**_L1_PARAMS)),
+    ])
+
+def lr_l1_sfm():
+    """Pipeline: scale -> SelectFromModel(L1 LR) -> L1 LR."""
+    return Pipeline([
+        ("sc",  StandardScaler()),
+        ("sfm", SelectFr
+----
+==== cell 80 markdown hits ['shap']
+## 4.6 Acciones correctivas (derivadas de diputraxv0)
+
+El cuaderno `diputraxv0` audita los siete supuestos de la regresión lineal clásica sobre **este mismo pipeline y `FEAT_COLS`**. Dos de sus hallazgos son *acciones de limpieza de datos independientes del modelo* (v0 §8 y §12) y se implementan aquí:
+
+- **AC1 — Consolidación de features redundantes.** Se elimina `univ_extranjera` (duplicado exacto de `estudios_en_extranjero`, r=1.0) y `n_cargos_legislativos_prev` (suma exacta de `fue_diputado_local + fue_diputado_federal + fue_senador`, ya incluidos). Son redundancias *dentro del espacio columna* del diseño: para un modelo lineal/L1 las predicciones son invariantes a su eliminación (mismo AUC), pero la **atribución SHAP deja de repartirse** entre columnas idénticas y los VIF/convergencia MLE del Anexo D mejoran.
+- **AC2 — Validación sin fuga por reelección.** ~625 registros son reelecci
+----
+==== cell 83 code hits ['shap', 'logit', 'log-odd']
+# ============================================================
+# INFRAESTRUCTURA BAYESIANA - PyMC NUTS
+# ============================================================
+import pymc as pm
+import arviz as az
+from scipy.special import expit
+import pathlib, warnings, logging
+warnings.filterwarnings('ignore')
+logging.getLogger('pymc').setLevel(logging.ERROR)
+
+_NUTS_CFG = dict(draws=1500, tune=800, target_accept=0.90,
+                 chains=4, cores=1, random_seed=42, progressbar=True)
+
+def _Xy_sfm_scaled(era, target, sfm_features, lr_model):
+    """X con scaler del pipeline LR, filtrado a SFM features."""
+    mask  = df_enc['era'] == era
+    X_all = df_enc.loc[mask, FEAT_COLS].astype(float).reset_index(drop=True)
+    y     = df_enc.loc[mask, target  ].astype(float).reset_index(drop=True)
+    sc    = lr_model.named_steps['sc']
+    X_sc  = pd.DataFrame(sc.transform(X_all), columns=FEAT_COLS)
+    
+----
+==== cell 86 markdown hits ['shap']
+## 5.1 Análisis SHAP — Beeswarm por era
+----
+==== cell 87 code hits ['shap', 'explainer', 'shap_values']
+shap_nodal   = {}
+models_nodal = {}
+
+for era in ERA_ORDER:
+    X, y = get_Xy(era, "nodal_bin")
+
+    m = lr_l1_sfm()
+    m.fit(X, y)
+    models_nodal[era] = m
+
+    X_sc  = m.named_steps["sc"].transform(X)
+    X_sel = m.named_steps["sfm"].transform(X_sc)
+    mask  = m.named_steps["sfm"].get_support()
+
+    explainer = shap.LinearExplainer(m.named_steps["lr"], X_sel)
+    sv_sel    = explainer.shap_values(X_sel)
+
+    # Pad SHAP values back to full feature space for consistent downstream use
+    sv_full = np.zeros((len(X), len(FEAT_COLS)))
+    for j, col_idx in enumerate([i for i, s in enumerate(mask) if s]):
+        sv_full[:, col_idx] = sv_sel[:, j]
+
+    shap_nodal[era] = (sv_full, X)
+    print(f"  {era}: SHAP OK  (selected={mask.sum()}/{len(mask)})")
+----
+==== cell 88 markdown hits ['shap', 'log-odd']
+### Interpretación de hallazgos de SHAP Beeswarm Nodales — grid 2×2 por época
+
+Cada punto representa un diputado. El eje X muestra el valor SHAP, es decir, la contribución individual al *log-odds* de recibir comisión nodal.
+
+Los valores están expresados en espacio de *log-odds*: contribuciones al predictor lineal de la Regresión Logística L1.
+
+---
+
+#### ERA_1 — PRI
+
+`area_Derecho` domina con `|SHAP| = 0.337`.
+
+Le siguen:
+
+| Variable | \|SHAP\| |
+|---|---:|
+| `area_Derecho` | 0.337 |
+| `fue_secretario_cargo` | 0.173 |
+| `univ_privada` | 0.173 |
+| `legislatura_num` | 0.132 |
+| `mayoria_relativa` | 0.107 |
+| `n_trayectoria_empresarial` | 0.089 |
+
+`n_trayectoria_empresarial` y `n_trayectoria_politica` son marginales o cercanas a cero; no son los co-predictores principales.
+
+La universidad privada como señal de distinción sugiere que la credencial de élite operaba como *proxy* de reclutamient
+----
+==== cell 89 markdown hits ['shap']
+## 5.2 Heatmap de importancias SHAP por era
+----
+==== cell 90 code hits ['shap']
+imp_nodal = {era: pd.Series(np.abs(shap_nodal[era][0]).mean(axis=0), index=FEAT_COLS)
+             for era in ERA_ORDER}
+
+df_imp_n = pd.DataFrame(imp_nodal).rename(columns=ERA_LABELS)
+df_imp_n["MEDIA"] = df_imp_n.mean(axis=1)
+df_imp_n = df_imp_n.sort_values("MEDIA", ascending=False).head(20)
+
+fig, ax = plt.subplots(figsize=(13, 7))
+plot_cols = [ERA_LABELS[e] for e in ERA_ORDER]
+sns.heatmap(df_imp_n[plot_cols], annot=True, fmt=".3f",
+            cmap="YlOrRd", ax=ax, linewidths=0.4)
+ax.set_title("SHAP mean(|val|) — Nodales — Top 20 features × Era",
+             fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.savefig(REPORT_DIR / "shap_nodales_heatmap.png", bbox_inches="tight", dpi=120)
+plt.show()
+
+df_imp_n.round(4)
+----
+==== cell 91 markdown hits ['shap', 'log-odd']
+### Interpretación — SHAP Heatmap Nodales — *features* × épocas
+
+El *heatmap* codifica en color la importancia media —`|SHAP|`— de cada *feature* para cada era en espacio de *log-odds*.
+
+**Cero exacto** significa que el coeficiente fue eliminado por la penalización L1.
+
+---
+
+| Feature | ERA_1 | ERA_2 | ERA_3 | ERA_4 | Interpretación |
+|---|---:|---:|---:|---:|---|
+| `area_Derecho` | 0.337 | 0.340 | 0.194 | 0.277 | Es el *feature* de mayor `|SHAP|` en ERA_1, ERA_2 y ERA_4. También es *top-1* en ERA_3, aunque casi igualado por `p_MORENA`. Es la señal más persistente de la serie. |
+| `edad_imp` | 0.000 | 0.228 | 0.114 | 0.035 | Eliminado en ERA_1; alcanza su pico en ERA_2 y cae con fuerza en ERA_3–ERA_4. **Caveat MNAR** —ver §2.2.1b—: parte de la señal en ERA_2 refleja visibilidad institucional en el SIL más que edad real. |
+| `fue_secretario_cargo` | 0.173 | 0.069 | 0.142 | 0.000 | Pico hi
+----
+==== cell 93 code hits ['shap']
+KEY_FEATS = [
+    "es_partido_mayoria", "fue_diputado_federal",  # AC1(v0): reemplaza n_cargos_legislativos_prev (suma exacta) por su componente principal
+    "fue_secretario_cargo", "n_trayectoria_admin",
+    "n_trayectoria_politica", "n_trayectoria_legislativa",
+    "edad_imp", "mayoria_relativa",
+]
+
+imp_raw_n = {era: pd.Series(np.abs(shap_nodal[era][0]).mean(axis=0), index=FEAT_COLS)
+             for era in ERA_ORDER}
+df_trend_n = pd.DataFrame(
+    {f: [imp_raw_n[e][f] for e in ERA_ORDER] for f in KEY_FEATS},
+    index=[ERA_LABELS[e] for e in ERA_ORDER]
+)
+
+fig, ax = plt.subplots(figsize=(12, 5))
+markers = ["o","s","^","D","v","P","X","*"]
+for i, feat in enumerate(KEY_FEATS):
+    ax.plot(range(4), df_trend_n[feat], marker=markers[i],
+            linewidth=2, label=feat)
+
+ax.set_xticks(range(4))
+ax.set_xticklabels([ERA_LABELS[e] for e in ERA_ORDER], fontsize=9)
+ax.set_ylabel("mean(|SHAP
+----
+==== cell 94 markdown hits ['shap', 'log-odd']
+**Interpretación — Evolución temporal de importancias SHAP (Nodales)**
+
+Gráfica de líneas: variación del peso de features clave a lo largo de las cuatro épocas. Valores en log-odds (predictor lineal LR L1). Cero = eliminado por L1.
+
+- `area_Derecho` (0.337 / 0.340 / 0.194 / 0.277): señal más persistente de la serie. Top-1 en ERA_1, ERA_2 y ERA_4; ligero descenso en ERA_3 pero sigue liderando. La formación jurídica no decae.
+- `edad_imp` (0.000 / 0.228 / 0.114 / 0.035): eliminado ERA_1; pico ERA_2 (top-2 prácticamente igual a area_Derecho); caída sostenida ERA_3-ERA_4. Caveat MNAR (§2.2.1b): en ERA_2, parte de la señal es proxy de visibilidad institucional en el SIL.
+- `fue_secretario_cargo` (0.173 / 0.069 / 0.142 / 0.000): pico histórico ERA_1 (0.173). Cae en ERA_2, repunta en ERA_3, eliminado en ERA_4. La experiencia de secretaría fue señal del reclutamiento priísta; no de la era panist
+----
+==== cell 97 markdown hits ['shap', 'log-odd']
+## 5.5 Interpretación — Comisiones Nodales
+
+Se observa una **señal decreciente a lo largo del tiempo**. El AUC del modelo **LR L1 + SFM** cae de **0.728** en `ERA_1` a **0.629** en `ERA_4`, lo que indica que el perfil biográfico predice progresivamente peor quién obtiene una comisión nodal.
+
+### Hallazgos clave por era
+
+#### ERA_1 — PRI
+
+- **AUC:** 0.728  
+- **Features activos:** 21  
+
+`area_Derecho` encabeza la importancia media (`0.337`), seguido de `fue_secretario_cargo` y `univ_privada` —ambos con `0.173`.  
+
+`n_trayectoria_empresarial` (`0.089`) y `n_trayectoria_politica` aparecen como señales marginales. En esta era, la formación jurídica y la credencial ejecutiva priísta son las señales centrales, no la trayectoria de carrera política pura.
+
+#### ERA_2 — PAN
+
+- **AUC:** 0.719  
+- **Features activos:** 19  
+
+`area_Derecho` (`0.340`) y `edad_imp` (`0.228`) aparecen prácticamente equ
+----
+==== cell 98 code hits ['shap']
+show_img("shap_nodales_beeswarm.png",
+         "SHAP Beeswarm — Nodales — Top 15 features por época",
+         figsize=(18, 13))
+----
+==== cell 99 code hits ['shap']
+show_img("shap_nodales_heatmap.png",
+         "SHAP Heatmap — Nodales — Top 20 features × Época",
+         figsize=(15, 8))
+----
+==== cell 100 code hits ['shap']
+show_img("shap_nodales_trend.png",
+         "Evolución de importancia SHAP — Nodales — features clave",
+         figsize=(14, 6))
+----
+==== cell 103 code hits ['logit']
+print('Entrenando Bayesiano NODAL (NUTS) - 4 eras...')
+bayes_nodal_idata, bayes_nodal_summary, bayes_nodal_auc = {}, {}, {}
+rows_bn = []
+
+for era in ERA_ORDER:
+    feats = sfm_selected_nodal.get(era, [])
+    if not feats:
+        print(f'  {era}: sin features SFM - saltando.'); continue
+
+    print(f'\n-- {ERA_LABELS[era]}  ({len(feats)} features) --')
+    X_arr, y_arr = _Xy_sfm_scaled(era, 'nodal_bin', feats, models_nodal[era])
+
+    idata = bayesian_logit_fit(X_arr, y_arr)
+    summ  = posterior_summary_df(idata, feats)
+    auc_b = bayes_auc_score(idata, X_arr, y_arr, feats)
+
+    bayes_nodal_idata[era]   = idata
+    bayes_nodal_summary[era] = summ
+    bayes_nodal_auc[era]     = auc_b
+
+    el = ERA_LABELS[era]
+    auc_lrf = _parse_auc(df_nodal_cv, el, 'LR L1 (full)')
+    auc_sfm = _parse_auc(df_nodal_cv, el, 'LR L1 + SFM')
+    rhat_max = float(az.summary(idata, var_names=['beta'])['r_hat']
+----
+==== cell 104 code hits ['coef_']
+# Forest plots + tablas de concordancia - Nodales
+for era in ERA_ORDER:
+    if era not in bayes_nodal_summary: continue
+    feats    = sfm_selected_nodal[era]
+    lr_coefs = models_nodal[era].named_steps['lr'].coef_[0]
+    summ     = bayes_nodal_summary[era]
+
+    fig = forest_comparison_fig(lr_coefs, feats, summ, ERA_LABELS[era], 'Nodales')
+    fig.savefig(REPORT_DIR / f'bayes_nodal_forest_{era}.png', bbox_inches='tight', dpi=110)
+    plt.show()
+
+    ag  = agreement_df(lr_coefs, feats, summ)
+    pct = ag['dir_agree'].mean() * 100
+    print(f'\n{ERA_LABELS[era]} - Concordancia de direccion: {pct:.0f}% '
+          f'({ag["dir_agree"].sum()}/{len(feats)})')
+
+    def _style_agree(row):
+        bg = "#2a8a41" if row['dir_agree'] else '#f8d7da'
+        return [f'background-color: {bg}'] * len(row)
+
+    display(ag.style
+              .apply(_style_agree, axis=1)
+              .format({'lr_coef'
+----
+==== cell 108 code hits ['shap', 'explainer', 'shap_values']
+shap_lastre   = {}
+models_lastre = {}
+
+for era in ERA_ORDER:
+    X, y = get_Xy(era, "lastre_bin")
+
+    m = lr_l1_sfm()
+    m.fit(X, y)
+    models_lastre[era] = m
+
+    X_sc  = m.named_steps["sc"].transform(X)
+    X_sel = m.named_steps["sfm"].transform(X_sc)
+    mask  = m.named_steps["sfm"].get_support()
+
+    explainer = shap.LinearExplainer(m.named_steps["lr"], X_sel)
+    sv_sel    = explainer.shap_values(X_sel)
+
+    sv_full = np.zeros((len(X), len(FEAT_COLS)))
+    for j, col_idx in enumerate([i for i, s in enumerate(mask) if s]):
+        sv_full[:, col_idx] = sv_sel[:, j]
+
+    shap_lastre[era] = (sv_full, X)
+    print(f"  {era}: SHAP OK  (selected={mask.sum()}/{len(mask)})")
+----
+==== cell 109 markdown hits ['shap']
+## 6.1 Comparativa SHAP — Nodales vs Lastre
+----
+==== cell 110 code hits ['shap']
+# Barplot comparativo top features nodal vs lastre
+TOP_N = 12
+
+def top_avg_imp(shap_dict, n=TOP_N):
+    """Mean importance across all eras for top-n features."""
+    all_imp = pd.DataFrame(
+        {era: pd.Series(np.abs(sv).mean(axis=0), index=FEAT_COLS)
+         for era, (sv, _) in shap_dict.items()}
+    )
+    return all_imp.mean(axis=1).nlargest(n)
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+for ax, (sd, label, color) in zip(
+    axes,
+    [(shap_nodal, "Nodales", "#e74c3c"),
+     (shap_lastre,"Lastre",  "#3498db")],
+):
+    top = top_avg_imp(sd)
+    era_data = {ERA_LABELS[era]:
+                pd.Series(np.abs(shap_data[0]).mean(axis=0), index=FEAT_COLS).reindex(top.index).fillna(0)
+                for era, shap_data in sd.items()}
+    df_plot = pd.DataFrame(era_data)
+    df_plot.plot(kind="barh", ax=ax, width=0.75,
+                 color=[ERA_COLORS[e] for e in ERA_ORDER])
+    a
+----
+==== cell 111 markdown hits ['shap']
+**Variables con mayor impacto en análisis SHAP: Nodales vs Lastre**
+
+Las barras enfrentadas muestran los features más importantes para cada tipo de comisión. Diferencias estructurales:
+
+- area_Derecho (SHAP nodal: 0.337 / 0.340 / 0.194 / 0.277) no aparece entre los top predictores de lastre — es señal de acceso a comisiones de poder, no de asignación marginal.
+- edad_imp es la excepción notable: top-2 en nodales ERA_2 (0.228) y el predictor de mayor magnitud media en lastre (media=0.110 en las cuatro eras; 0.147 si se restringe a ERA_1-3, donde está activo). El L1 elimina edad_imp de lastre en ERA_4 (0.000), lo que arrastra la media global a la baja — su relevancia en lastre se concentra en ERA_1 a ERA_3.
+- n_trayectoria_admin aparece entre los top predictores de lastre ERA_2 (0.174) pero no figura en el top-20 de nodales en ninguna era — la trayectoria burocrática tiene señal en el meca
+----
+==== cell 112 markdown hits ['shap']
+## 6.2 Test de imagen espejo — ¿Lastre es el inverso de Nodal?
+
+Si lastre fuera simplemente el inverso de nodal (asignación por exclusión), la correlación entre SHAP(nodal) y -SHAP(lastre) debería ser r ≈ −1.0.
+----
+==== cell 113 code hits ['shap']
+# Correlacion SHAP(nodal) vs -SHAP(lastre) por era
+corr_mirror = {}
+for era in ERA_ORDER:
+    sv_n = pd.Series(np.abs(shap_nodal[era][0]).mean(axis=0),  index=FEAT_COLS)
+    sv_l = pd.Series(np.abs(shap_lastre[era][0]).mean(axis=0), index=FEAT_COLS)
+    corr_mirror[era] = sv_n.corr(-sv_l)
+
+print("Correlacion SHAP(nodal) vs -SHAP(lastre):")
+print("Si r ~ 1.0 -> imagen espejo exacta (asignacion por exclusion, no seleccion positiva)")
+print()
+for era, c in corr_mirror.items():
+    bar = "=" * int(abs(c) * 30)
+    print(f"  {ERA_LABELS[era]:<30}  r = {c:+.3f}  |{bar}|")
+----
+==== cell 114 code hits ['shap']
+_mirror_read = {
+    "ERA_1_PRI":    ("Relación inversa débil",  "asignación no es por exclusión simple"),
+    "ERA_2_PAN":    ("Inversa moderada",         "la más cercana a un patrón bimodal mayoría/oposición"),
+    "ERA_3_TRANS":  ("Relación inversa débil",  "fragmentación diluye cualquier lógica de espejo"),
+    "ERA_4_MORENA": ("Inversa moderada",         "patrón similar a ERA_2 bajo nuevo alineamiento"),
+}
+df_mirror = pd.DataFrame([
+    {"Época": ERA_LABELS[era],
+     "r(SHAP_nodal, -SHAP_lastre)": corr_mirror[era],
+     "Interpretación": _mirror_read[era][0],
+     "Lectura": _mirror_read[era][1]}
+    for era in ERA_ORDER
+])
+display(df_mirror.set_index("Época"))
+----
+==== cell 117 code hits ['shap']
+show_img("shap_nodal_vs_lastre.png",
+         "Nodales vs Lastre — Top features SHAP por época",
+         figsize=(17, 7))
+----
+==== cell 118 markdown hits ['shap']
+## 6.4 Interpretacion -- Comisiones Lastre
+Senal consistentemente debil. AUC (LR L1 + SFM) entre 0.525 y 0.634.
+
+Hallazgos por era:
+
+- ERA_1 (PRI) -- AUC=0.583, 20 features activos. nivel_cargo_max (0.147) lidera, seguido de edad_imp (0.133) y legislatura_num (0.127). Ningun feature de trayectoria politica o juridica destaca -- el mecanismo de asignacion lastre en el PRI parece regido por variables de contexto institucional (nivel de cargo, momento de la legislatura) mas que por perfil de carrera.
+- ERA_2 (PAN) -- AUC=0.634, 26 features activos. Epoca mas predecible. n_trayectoria_admin (0.174) y n_organos_gobierno (0.144) lideran -- la oposicion PRI/PRD era mas homogenea en perfil administrativo. edad_imp (0.149) tambien relevante.
+- ERA_3 (Transicion) -- AUC=0.601, 23 features activos. edad_imp (0.158) es el top-1 de la era para lastre, seguido de univ_privada (0.097) y variables regio
+----
+==== cell 120 code hits ['logit']
+print('Entrenando Bayesiano LASTRE (NUTS) - 4 eras...')
+bayes_lastre_idata, bayes_lastre_summary, bayes_lastre_auc = {}, {}, {}
+rows_bl = []
+
+for era in ERA_ORDER:
+    feats = sfm_selected_lastre.get(era, [])
+    if not feats:
+        print(f'  {era}: sin features SFM - saltando.'); continue
+
+    print(f'\n-- {ERA_LABELS[era]}  ({len(feats)} features) --')
+    X_arr, y_arr = _Xy_sfm_scaled(era, 'lastre_bin', feats, models_lastre[era])
+
+    idata = bayesian_logit_fit(X_arr, y_arr)
+    summ  = posterior_summary_df(idata, feats)
+    auc_b = bayes_auc_score(idata, X_arr, y_arr, feats)
+
+    bayes_lastre_idata[era]   = idata
+    bayes_lastre_summary[era] = summ
+    bayes_lastre_auc[era]     = auc_b
+
+    el = ERA_LABELS[era]
+    auc_lrf = _parse_auc(df_lastre_cv, el, 'LR L1 (full)')
+    auc_sfm = _parse_auc(df_lastre_cv, el, 'LR L1 + SFM')
+    rhat_max = float(az.summary(idata, var_names=['beta
+----
+==== cell 121 code hits ['coef_']
+# Forest plots + tablas de concordancia - Lastre
+for era in ERA_ORDER:
+    if era not in bayes_lastre_summary: continue
+    feats    = sfm_selected_lastre[era]
+    lr_coefs = models_lastre[era].named_steps['lr'].coef_[0]
+    summ     = bayes_lastre_summary[era]
+
+    fig = forest_comparison_fig(lr_coefs, feats, summ, ERA_LABELS[era], 'Lastre')
+    fig.savefig(REPORT_DIR / f'bayes_lastre_forest_{era}.png', bbox_inches='tight', dpi=110)
+    plt.show()
+
+    ag  = agreement_df(lr_coefs, feats, summ)
+    pct = ag['dir_agree'].mean() * 100
+    print(f'\n{ERA_LABELS[era]} - Concordancia: {pct:.0f}% ({ag["dir_agree"].sum()}/{len(feats)})')
+
+    def _style_agree(row):
+        bg = "#188131" if row['dir_agree'] else "#db4552"
+        return [f'background-color: {bg}'] * len(row)
+
+    display(ag.style
+              .apply(_style_agree, axis=1)
+              .format({'lr_coef': '{:+.4f}', 'bayes_mean
+----
+==== cell 123 markdown hits ['poisson']
+# 7. Comisiones Temáticas — Regresión Poisson
+
+**Target:** n_comisiones_tematicas (0–10, 89% ≥ 1). Conteo de comisiones temáticas por diputado.
+
+**Pregunta:** ¿cuántas comisiones temáticas acumula un diputado dado su perfil? Baseline = predecir siempre la media.
+----
+==== cell 124 code hits ['poisson']
+print("Entrenando modelos para TEMATICAS (GLM Poisson + XGBoost Poisson)... ")
+rows_tem = []
+
+for era in ERA_ORDER:
+    X, y = get_Xy(era, "n_comisiones_tematicas")
+
+    poi_mu, poi_sd = cv_mae(lr_poisson(), X, y)
+    xgb_poi_mu, xgb_poi_sd = cv_mae(make_xgb_poisson(), X, y)
+
+    rows_tem.append({
+        "Era": ERA_LABELS[era], "n": len(y),
+        "Poisson GLM": f"{poi_mu:.3f}+-{poi_sd:.3f}",
+        "XGB Poisson": f"{xgb_poi_mu:.3f}+-{xgb_poi_sd:.3f}",
+    })
+    print(f"  {era:<18}  GLM={poi_mu:.3f}  XGB_Poi={xgb_poi_mu:.3f}")
+
+df_tem_cv = pd.DataFrame(rows_tem)
+df_tem_cv
+
+----
+==== cell 125 code hits ['shap', 'poisson', 'explainer', 'shap_values']
+shap_tem   = {}
+models_tem = {}
+
+for era in ERA_ORDER:
+    X, y = get_Xy(era, "n_comisiones_tematicas")
+
+    m = lr_poisson()
+    m.fit(X, y)
+    models_tem[era] = m
+
+    X_sc = m.named_steps["sc"].transform(X)
+    explainer = shap.LinearExplainer(m.named_steps["pr"], X_sc)
+    sv = explainer.shap_values(X_sc)
+
+    shap_tem[era] = (sv, X)
+    print(f"  {era}: SHAP OK")
+----
+==== cell 126 code hits ['shap']
+imgs_tem = {era: shap_beeswarm_to_img(
+                *shap_tem[era], top_n=15,
+                title=ERA_LABELS[era], color=ERA_COLORS[era])
+            for era in ERA_ORDER}
+
+fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+for ax, era in zip(axes.flatten(), ERA_ORDER):
+    ax.imshow(imgs_tem[era])
+    ax.axis("off")
+
+plt.suptitle("Comisiones Tematicas — SHAP beeswarm por era",
+             fontsize=15, fontweight="bold")
+plt.tight_layout()
+plt.savefig(REPORT_DIR / "shap_tematicas_beeswarm.png", bbox_inches="tight", dpi=120)
+plt.show()
+----
+==== cell 127 markdown hits ['shap']
+**Interpretación — SHAP Beeswarm Temáticas (grid 2×2 por época)**
+
+A diferencia del beeswarm de nodales, aquí la dispersión de puntos es más uniforme y sin predictores dominantes claros en ninguna época. En ninguna era emerge una variable con masa SHAP claramente superior al resto. Esta ausencia de estructura SHAP es coherente con el bajo poder predictivo del modelo (mejora ≤8.2% sobre el baseline de predecir siempre la media). El número de comisiones temáticas responde a lógicas distributivas internas — cuotas de bancada, disponibilidad de cupos, acuerdos de coalición — que no quedan registradas en el perfil biográfico.
+----
+==== cell 130 code hits ['shap']
+show_img("shap_tematicas_beeswarm.png",
+         "SHAP Beeswarm — Temáticas — Top 15 features por época",
+         figsize=(18, 13))
+----
+==== cell 131 markdown hits ['shap', 'log-conteo', 'poisson', 'explainer']
+## 7.2 Interpretación — Comisiones Temáticas
+
+Las **comisiones temáticas** son esencialmente impredecibles desde el perfil biográfico.
+
+La mejora sobre el baseline —predecir siempre la media— es mínima:
+
+- **ERA_1:** mejor caso, con aproximadamente **8.2% de mejora**  
+  - GLM Poisson MAE = `0.810`  
+  - Baseline = `0.855`
+- **ERA_2, ERA_3 y ERA_4:** mejora **≤ 3%**, es decir, prácticamente ninguna ganancia predictiva.
+
+### Modelo
+
+El modelo utilizado es un **GLM Poisson**, implementado mediante `PoissonRegressor` con regularización L2.
+
+Para las comisiones temáticas **no se aplica SelectFromModel**, ya que el objetivo es contar, no clasificar. En este caso, el GLM Poisson es el modelo más apropiado para datos de conteo con sobredispersión moderada.
+
+Los valores SHAP se calculan con `LinearExplainer` en espacio de **log-conteo**, es decir, sobre el predictor lineal del GLM con enlace log
+----
+==== cell 133 code hits ['coef_']
+# -- 1. Tabla global --
+rows_g = []
+for era in ERA_ORDER:
+    el = ERA_LABELS[era]
+    for tl, df_cv, bayes_auc_d, sfm_d, bayes_summ, lr_m in [
+        ('Nodal',  df_nodal_cv,  bayes_nodal_auc,  sfm_selected_nodal,  bayes_nodal_summary,  models_nodal),
+        ('Lastre', df_lastre_cv, bayes_lastre_auc, sfm_selected_lastre, bayes_lastre_summary, models_lastre),
+    ]:
+        auc_lrf = _parse_auc(df_cv, el, 'LR L1 (full)')
+        auc_b   = bayes_auc_d.get(era, float('nan'))
+        feats   = sfm_d.get(era, [])
+        if feats and era in bayes_summ:
+            lr_c    = lr_m[era].named_steps['lr'].coef_[0]
+            ag      = agreement_df(lr_c, feats, bayes_summ[era])
+            pct_dir = round(ag['dir_agree'].mean() * 100, 1)
+            n_sig   = int(bayes_summ[era]['signif_94'].sum())
+        else:
+            pct_dir, n_sig = float('nan'), 0
+        rows_g.append({
+            'E
+----
+==== cell 137 markdown hits ['shap']
+**Interpretación — Comparativa de variantes de Regresión Logística**
+
+Las tres especificaciones parten del mismo pipeline (`StandardScaler` + `LogisticRegression`, `class_weight="balanced"`, `C=0.1`, semilla 42) y difieren únicamente en el tipo de penalización (L2 vs. L1) y en si se aplica selección de variables (`SelectFromModel`).
+
+- **L2 (v4) vs. L1 (full):** ambas usan el conjunto completo de FEAT_COLS; la diferencia de AUC entre ellas (Delta L1-L2) aísla el efecto puro de cambiar la penalización de Ridge (L2) a Lasso (L1). Valores cercanos a cero indican que la elección de penalización es predictivamente neutra y que la ventaja de L1 —si la hay— es de interpretabilidad (esparsidad de coeficientes) más que de poder predictivo.
+- **L1+SFM vs. L2 (v4):** Delta SFM-L2 aísla el efecto combinado de cambiar la penalización y reducir el espacio de variables. Si este delta es comparable o me
+----
+==== cell 138 markdown hits ['shap']
+## 8.1 Importancias SHAP consolidadas (Nodales / Lastre / Temáticas × Eras)
+----
+==== cell 139 code hits ['shap']
+def imp_table(shap_dict, top_n=20):
+    rows = {era: pd.Series(np.abs(sv).mean(axis=0), index=FEAT_COLS)
+            for era, (sv, _) in shap_dict.items()}
+    df = pd.DataFrame(rows).rename(columns=ERA_LABELS)
+    df["MEDIA"] = df.mean(axis=1)
+    return df.sort_values("MEDIA", ascending=False).head(top_n).round(4)
+
+print("=== NODALES ===")
+display(imp_table(shap_nodal))
+
+print("\n=== LASTRE ===")
+display(imp_table(shap_lastre))
+
+print("\n=== TEMATICAS ===")
+display(imp_table(shap_tem))
+----
+==== cell 140 markdown hits ['shap', 'log-odd', 'log-conteo', 'poisson']
+**Interpretación — Tabla consolidada de importancias SHAP**
+
+**Nodales / Lastre / Temáticas × Épocas**
+
+La tabla normaliza la importancia media (`|SHAP|`) de los principales features para los tres targets y las cuatro eras.
+
+- **Clasificación binaria:** interpretada en espacio de **log-odds**.
+- **Temáticas:** interpretadas en espacio de **log-conteo**, correspondiente al enlace log del GLM Poisson.
+
+---
+
+**Nodales — Hallazgos estructurales**
+
+**`area_Derecho`**
+
+- **Valores:** `0.337 / 0.340 / 0.194 / 0.277`
+- **Media:** `0.287`
+
+Es el feature con mayor importancia media de toda la tabla. Su señal no decae: lidera en `ERA_1`, `ERA_2` y `ERA_4`.
+
+**`n_cargos_legislativos_prev`**
+
+- **Valores:** `0.000 / 0.132 / 0.133 / 0.263`
+- **Media:** `0.132`
+
+Alcanza su pico histórico en `ERA_4`. Escala con la reelección consecutiva y casi iguala a `area_Derecho` en esa era.
+
+**`sexo_bin`**
+
+- **Val
+----
+==== cell 142 code hits ['poisson', 'predict_proba']
+def rolling_forward(target, is_binary=True):
+    from sklearn.metrics import roc_auc_score, mean_absolute_error
+    results = []
+    for train_era, test_era in zip(ERA_ORDER[:-1], ERA_ORDER[1:]):
+        X_tr, y_tr = get_Xy(train_era, target)
+        X_te, y_te = get_Xy(test_era,  target)
+
+        if is_binary:
+            m = lr_l1_sfm()
+            m.fit(X_tr, y_tr)
+            prob  = m.predict_proba(X_te)[:, 1]
+            score = roc_auc_score(y_te, prob)
+            metric = "AUC"
+        else:
+            m = lr_poisson()
+            m.fit(X_tr, y_tr)
+            score  = mean_absolute_error(y_te, m.predict(X_te))
+            metric = "MAE"
+
+        results.append({
+            "Transicion": f"{ERA_LABELS[train_era].split('(')[0].strip()} -> {ERA_LABELS[test_era].split('(')[0].strip()}",
+            metric: round(score, 3),
+        })
+    return pd.DataFrame(results)
+
+df_roll_n = 
+----
+==== cell 147 markdown hits ['shap', 'log-odd']
+# 9. Perfiles Prototípicos por Era
+
+El prototipo es el diputado con mayor SHAP positivo acumulado en el modelo **LR L1 + SelectFromModel** de cada era. Esto es, el individuo cuyo perfil maximiza el log-odds de asignación a comisión nodal. Los perfiles prototípicos capturan el extremo favorable de la distribución SHAP, no el diputado promedio.
+----
+==== cell 148 code hits ['shap']
+DISPLAY_FEATS = [
+    "es_partido_mayoria", "fue_diputado_federal",
+    "fue_secretario_cargo", "n_trayectoria_admin",
+    "n_trayectoria_politica", "grado_estudios_ord",
+    "tiene_posgrado", "univ_elite",
+    "sexo_bin", "edad_imp",
+    "mayoria_relativa", "fue_senador", "nivel_cargo_max",
+]
+
+profiles = {}
+for era in ERA_ORDER:
+    sv, X = shap_nodal[era]
+    best  = int(np.argmax(sv.sum(axis=1)))
+    profiles[ERA_LABELS[era]] = X.iloc[best][DISPLAY_FEATS]
+
+df_profiles = pd.DataFrame(profiles).T
+print("Perfiles prototipicos — 1 diputado por era con mayor SHAP acumulado (Nodales):")
+df_profiles
+----
+==== cell 149 markdown hits ['shap']
+**Interpretacion -- Tabla de perfiles prototipicos por epoca**
+
+El prototipo es el diputado con mayor SHAP positivo acumulado en el modelo LR L1 + SFM de cada era. Lectura de la tabla (valores reales en la salida anterior):
+
+- **ERA_1 (PRI):** militante del partido mayoritario, con experiencia previa de secretaria (fue_secretario_cargo=1) y la trayectoria administrativa mas alta de la serie (14) junto con trayectoria politica alta (13). Sin cargos legislativos previos (0) -- el ascenso se construyo dentro del aparato ejecutivo-partidista, no en el Congreso. Licenciatura, sin posgrado, universidad de elite. Edad 52.
+- **ERA_2 (PAN):** tambien del partido mayoritario y con secretaria previa, pero con perfil mas comedido en trayectoria administrativa (8) y politica (7); compensa con posgrado y dos cargos legislativos previos. Es el unico prototipo electo por mayoria relativa (mayoria_relati
+----
+==== cell 150 code hits ['shap', 'expected_value', 'base_value', 'explainer']
+# Waterfall del perfil prototipico en cada era
+fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+axes = axes.flatten()
+
+for i, era in enumerate(ERA_ORDER):
+    sv, X  = shap_nodal[era]
+    best   = int(np.argmax(sv.sum(axis=1)))
+
+    _m     = models_nodal[era]
+    _X_sc  = _m.named_steps["sc"].transform(X)
+    _X_sel = _m.named_steps["sfm"].transform(_X_sc)
+    _exp   = shap.LinearExplainer(_m.named_steps["lr"], _X_sel)
+    _base  = float(_exp.expected_value) if np.ndim(_exp.expected_value) == 0 else float(_exp.expected_value[1])
+
+    exp_obj = shap.Explanation(
+        values=sv[best],
+        base_values=_base,
+        data=X.values[best] if hasattr(X, 'values') else X[best],
+        feature_names=FEAT_COLS,
+    )
+
+    ax = axes[i]
+    plt.sca(ax)
+    shap.plots.waterfall(exp_obj, max_display=12, show=False)
+    ax.set_title(f"Perfil prototipico - {ERA_LABELS[era]}",
+                 fo
+----
+==== cell 151 markdown hits ['shap', 'log-odd']
+**Interpretacion -- Waterfall SHAP: Perfiles Prototipicos Nodales (2x2 por epoca)**
+
+Cada waterfall descompone el SHAP acumulado del diputado prototipico. Valores en log-odds. La barra base es el log-odds promedio de la era.
+
+**Era 1 (PRI)**
+
+`n_organos_gobierno` genera la barra mas larga (`SHAP=+1.354`), muy por encima de `area_Derecho` (`+0.831`) -- pese a que este ultimo es el feature de mayor `|SHAP|` medio a nivel poblacional (`0.337`). El prototipo acumula ademas `fue_delegado` (`+0.563`), `fue_secretario_cargo` (`+0.421`) y `n_trayectoria_admin` (`+0.410`): el extremo favorable se construye combinando varias credenciales ejecutivas, no por una sola senal dominante.
+
+**Era 2 (PAN)**
+
+`area_Derecho` (`+0.669`) encabeza, coherente con su peso poblacional (`0.340`). Le siguen `tiene_posgrado` (`+0.287`) y `n_cargos_legislativos_prev` (`+0.281`); `admin_en_gobierno_est`, `fue_asesor` y
+----
+==== cell 154 code hits ['shap']
+show_img("waterfall_prototipos.png",
+         "Waterfall SHAP — Contribución de cada feature al prototipo nodal por época",
+         figsize=(20, 15))
+----
+==== cell 155 markdown hits ['shap']
+## 9.2 Lectura comparativa — Evolución del perfil nodal
+
+| Dimensión | ERA_1 PRI | ERA_2 PAN | ERA_3 Trans. | ERA_4 Morena |
+|---|---|---|---|---|
+| Partido mayoría | Sí | Sí | Sí | Sí |
+| Capital político (`n_trayectoria_politica`) | Alto (13) | Moderado (7) | Pico (17) | Mínimo (4) |
+| Cargos legislativos previos | 0 | 2 | 2 | Pico (3) |
+| Capital administrativo (`n_trayectoria_admin`) | Pico (14) | Moderado (8) | Alto (12) | Moderado (8) |
+| Educación | Licenciatura + elite, sin posgrado | Licenciatura + posgrado + elite | Sin dato + posgrado, sin elite | Doctorado + posgrado + elite |
+| Edad | 52 | 52 | Máxima (60) | 55 |
+| Cargo ejecutivo previo (secretaría) | Sí | Sí | Sí | No (pero ex-senador) |
+| Feature SHAP dominante (poblacional) | `area_Derecho` (0.337) | `area_Derecho` (0.340) / `edad_imp` (0.228) | `area_Derecho` (0.194) / `p_MORENA` (0.181) / `n_tray_leg` (0.176) | `area_D
+----
+==== cell 158 code hits ['poisson']
+summary = pd.DataFrame([
+    # Nodales — LR L1 (full) values from v5 reference; SFM updated after run
+    {"Target": "Nodales",   "Epoca": "ERA_1 PRI",    "Metrica": "AUC",  "LR L1 (full)": 0.734, "LR L1 + SFM": 0.728, "Senal": "Moderada"},
+    {"Target": "Nodales",   "Epoca": "ERA_2 PAN",    "Metrica": "AUC",  "LR L1 (full)": 0.720, "LR L1 + SFM": 0.719, "Senal": "Moderada"},
+    {"Target": "Nodales",   "Epoca": "ERA_3 Trans.", "Metrica": "AUC",  "LR L1 (full)": 0.699, "LR L1 + SFM": 0.696, "Senal": "Moderada-debil"},
+    {"Target": "Nodales",   "Epoca": "ERA_4 Morena", "Metrica": "AUC",  "LR L1 (full)": 0.619, "LR L1 + SFM": 0.629, "Senal": "Debil"},
+    # Lastre
+    {"Target": "Lastre",    "Epoca": "ERA_1 PRI",    "Metrica": "AUC",  "LR L1 (full)": 0.585, "LR L1 + SFM": 0.583, "Senal": "Debil"},
+    {"Target": "Lastre",    "Epoca": "ERA_2 PAN",    "Metrica": "AUC",  "LR L1 (full)": 0.
+----
+==== cell 164 markdown hits ['shap']
+# 11. Conclusiones y Hallazgos Clave
+
+---
+
+## 11.1 Hallazgos principales
+
+**H1 — Las comisiones nodales son moderadamente predecibles (AUC 0.62–0.73)**
+
+El perfil biográfico explica una parte real pero no dominante de la asignación nodal. El resto lo determinan factores institucionales no observados: negociaciones de bancada, cuotas de coalición, relaciones personales con liderazgos. La señal se deteriora sistemáticamente a lo largo del tiempo.
+
+**H2 — Las comisiones lastre son esencialmente opacas (AUC 0.53–0.63)**
+
+La hipótesis de que el lastre es el perfil inverso del nodal queda rechazada. Las correlaciones SHAP(nodal) vs −SHAP(lastre) oscilan entre −0.109 (ERA\_1) y −0.387 (ERA\_2), lejos de −1.0. Nodal y lastre deben tratarse como mecanismos institucionales distintos.
+
+**H3 — Las comisiones temáticas son prácticamente impredecibles desde el perfil**
+
+La mejora sobre el baseline no 
+----
+==== cell 166 code hits ['predict_proba']
+from sklearn.model_selection import StratifiedKFold
+import numpy as np
+
+ALT_TARGETS = [
+    ("nodal_bin",        "Base (>=1 nodal)"),
+    ("nodal_bin_strict", "Alt-1 Estricta (>=2 nodales)"),
+    ("nodal_bin_pres",   "Alt-2 Ampliada (>=1 nodal|presidente)"),
+]
+
+rows_rob = []
+kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+for target, label in ALT_TARGETS:
+    for era in ERA_ORDER:
+        X, y = get_Xy(era, target)
+        if y.sum() < 10:
+            continue
+        aucs = []
+        for train_idx, val_idx in kf.split(X, y):
+            m = lr_l1_sfm()
+            m.fit(X.iloc[train_idx], y.iloc[train_idx])
+            aucs.append(roc_auc_score(
+                y.iloc[val_idx],
+                m.predict_proba(X.iloc[val_idx])[:, 1]
+            ))
+        rows_rob.append({
+            "Clasificacion": label,
+            "Era": ERA_LABELS[era],
+            "n": len(y),
+ 
+----
+==== cell 168 code hits ['predict_proba']
+# ============================================================
+# B.2  Robustez tematicas — binarizaciones alternativas del conteo
+# ============================================================
+rows_rob_tem = []
+kf_tem = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+for era in ERA_ORDER:
+    X_raw, y_cnt = get_Xy(era, "n_comisiones_tematicas")
+    med_era = max(int(y_cnt.median()), 1)  # umbral relativo dentro de la era
+
+    alt_targets = [
+        ((y_cnt >= 1).astype(int), "Alt-1 Binaria (>=1)"),
+        ((y_cnt >= 2).astype(int), "Alt-2 Binaria (>=2)"),
+        ((y_cnt >= med_era).astype(int), f"Alt-3 Mediana (>={med_era})"),
+    ]
+
+    for y_bin, label in alt_targets:
+        n_pos = int(y_bin.sum())
+        n_neg = len(y_bin) - n_pos
+        if n_pos < 10 or n_neg < 10:
+            continue
+        aucs = []
+        for train_idx, val_idx in kf_tem.split(X_raw, y_bin):
+
+----
+==== cell 169 markdown hits ['shap']
+## B.2.1 Interpretación — Robustez de la operacionalización de temáticas
+
+### Diferencia metodológica respecto a nodales (B.1)
+
+| Dimensión | Nodales | Temáticas |
+|---|---|---|
+| Naturaleza del target | Binario ya en el parquet | Conteo binarizado *ad hoc* |
+| Fuente de variación | Frontera de clasificación ETL | Umbral de discretización |
+| Hipótesis de robustez | Señal fuerte e invariante al umbral (Δ < 0.03) | Señal débil y consistentemente baja (AUC < 0.65) |
+| Umbral de alerta | Δ > 0.03 entre clasificaciones | AUC > 0.65 en algún umbral |
+
+### Interpretación de resultados posibles
+
+- **AUC uniformemente bajo (< 0.60) en todos los umbrales:** confirma sección 7.2. El perfil biográfico no distingue quién recibe más o menos temáticas, sea cual sea el corte. La asignación responde a lógicas distributivas internas no capturadas en el currículum.
+
+- **Alt-1 (≥1) con AUC sensiblemente ma
+----
+==== cell 174 markdown hits ['shap', 'poisson', 'odds ratio']
+# Anexo D. Estadísticos clásicos de inferencia frecuentista (MLE, statsmodels)
+
+## D.0 Objetivo y metodología
+
+Las secciones 5–9 y los Anexos A–C documentan la interpretabilidad del modelo productivo —Regresión Logística L1 (Lasso) más SHAP— y su contraste con una capa Bayesiana (NUTS, secciones 5.6, 6.5, 8.0). Ninguna de las dos reporta el formato de tabla de regresión "clásico" que la ciencia política cuantitativa usa como estándar de reporte: coeficiente, error estándar, estadístico *z*, valor *p*, intervalo de confianza al 95 % y razón de momios (*odds ratio* / *incidence rate ratio*), junto con diagnósticos de ajuste (pseudo R² de McFadden, prueba de razón de verosimilitud contra el modelo nulo, AIC/BIC) y de desempeño de clasificación (matriz de confusión, *precision*, *recall*, F1).
+
+Este anexo agrega esa capa vía **Maximum Likelihood Estimation (MLE) no ponderada, con `statsmodel
+----
+==== cell 175 code hits ['logit', 'odds ratio']
+# ============================================================
+# ANEXO D.1 — Regresion Logistica clasica (MLE, statsmodels) — Nodales
+# Coeficientes, error estandar, z, valor p, IC95%, odds ratio
+# Mismo subconjunto de variables que SelectFromModel (sfm_selected_nodal)
+# ============================================================
+import statsmodels.api as sm
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score
+
+def logit_classic_table(era, target, sfm_dict):
+    feats = sfm_dict[era]
+    X, y = get_Xy(era, target)
+    sc = StandardScaler()
+    X_sc = pd.DataFrame(sc.fit_transform(X[feats]), columns=feats)
+    X_design = sm.add_constant(X_sc, has_constant='add')
+    res = sm.Logit(y, X_design).fit(disp=0, maxiter=200)
+
+    ci = res.conf_int(alpha=0.05)
+    tbl = pd.DataFrame({
+        'coef': res.params, 'std_err': res.bse, 'z': res.tvalues,
+        'p_va
+----
+==== cell 176 markdown hits ['shap']
+**Interpretación — D.1 Regresión Logística clásica (Nodales)**
+
+**ERA_1 — PRI** (n=1500, **la MLE no penalizada no converge**): el ajuste global no es utilizable —`Pseudo R² McFadden = −inf`, `LLR p = 1.00`, `Convergió = False`— porque `admin_en_sindicato` produce **separación cuasi-completa**: casi ningún diputado con trayectoria sindical recibió comisión nodal en ERA_1, y la verosimilitud diverge llevando ese coeficiente a +∞ (β≈9.7×10¹⁰, OR=∞) y arrastrando al intercepto (β≈5.6×10⁹). **Los coeficientes no afectados por la separación sí se estiman con normalidad y son legibles:** `area_Derecho` es el más fuerte (β=0.467, OR=1.60, *p*<0.001) —una desviación estándar adicional en la señal de formación jurídica multiplica por 1.6 la razón de momios de recibir comisión nodal, confirmando en escala de razón de momios lo que SHAP ya mostraba en magnitud—, seguido de `area_Económico-Financier
+----
+==== cell 177 code hits ['logit']
+# ============================================================
+# ANEXO D.2 — Regresion Logistica clasica (MLE, statsmodels) — Lastre
+# Mismo subconjunto de variables que SelectFromModel (sfm_selected_lastre)
+# ============================================================
+logit_tables_lastre = {}
+rows_logit_lastre = []
+for era in ERA_ORDER:
+    tbl, stats_row = logit_classic_table(era, "lastre_bin", sfm_selected_lastre)
+    logit_tables_lastre[era] = tbl
+    rows_logit_lastre.append(stats_row)
+    print(f"\n=== {ERA_LABELS[era]} \u2014 Lastre \u2014 n={stats_row['n']}, "
+          f"Pseudo R2={stats_row['Pseudo R2 McFadden']}, "
+          f"LLR p={stats_row['LLR p-valor']:.2e}, convergio={stats_row['Convergio']} ===")
+    display(tbl)
+
+df_logit_lastre_stats = pd.DataFrame(rows_logit_lastre)
+print("\n-- Resumen de ajuste del modelo \u2014 Logit clasico Lastre --")
+display(df_logit_lastre_st
+----
+==== cell 178 markdown hits ['shap']
+**Interpretación — D.2 Regresión Logística clásica (Lastre)**
+
+**ERA_1** (n=1500, pseudo R² = 0.050) y **ERA_2** (n=1500, pseudo R² = 0.094) convergen sin problemas numéricos. El ajuste de lastre es sistemáticamente más débil que el de nodales en las cuatro eras (pseudo R² 0.050–0.094 vs. 0.129–0.161), consistente con el hallazgo ya documentado en §6.4: la asignación a comisiones lastre responde menos al perfil biográfico que la asignación a nodales. En ERA_1, `sexo_bin` (OR=0.88, *p*=0.025) y `fue_secretario_cargo` (OR=0.82, *p*=0.004) son negativos — dirección inversa a nodales, coherente con la hipótesis de "imagen espejo" de §6.2 —, pero `nivel_cargo_max` es positivo (OR=1.30, *p*<0.001): un hallazgo contraintuitivo que el SHAP agregado no distingue por signo y que merece lectura cualitativa adicional. En ERA_2, `n_trayectoria_admin` es fuertemente negativo (OR=0.755, *p*<0.001) y `n
+----
+==== cell 181 code hits ['poisson']
+# ============================================================
+# ANEXO D.4 — GLM Poisson clasico (statsmodels) — Tematicas
+# Variables clave (KEY_FEATS, seccion 5.3); el modelo productivo
+# lr_poisson() no tiene paso de seleccion, por lo que se usa el
+# subconjunto interpretativo ya establecido en el cuaderno.
+# ============================================================
+def poisson_classic_table(era):
+    X, y = get_Xy(era, "n_comisiones_tematicas")
+    feats = [f for f in KEY_FEATS if f in X.columns]
+    sc = StandardScaler()
+    X_sc = pd.DataFrame(sc.fit_transform(X[feats]), columns=feats)
+    X_design = sm.add_constant(X_sc, has_constant='add')
+    res = sm.GLM(y, X_design, family=sm.families.Poisson()).fit()
+    null_res = sm.GLM(y, np.ones((len(y), 1)), family=sm.families.Poisson()).fit()
+
+    ci = res.conf_int(alpha=0.05)
+    tbl = pd.DataFrame({
+        'coef': res.params, 'std
+----
+==== cell 182 markdown hits ['poisson']
+**Interpretación — D.4 GLM Poisson clásico (Temáticas)**
+
+Los cuatro modelos convergen sin problemas de separación (a diferencia de D.1–D.2) —el enlace log del Poisson y la ausencia de *dummies* de categoría rara en `KEY_FEATS` evitan el problema estructural de los binarios—.
+
+**Pseudo R² por deviance:** 0.023 (ERA_1) → 0.017 (ERA_2) → 0.029 (ERA_3) → 0.059 (ERA_4). Son valores bajos en las cuatro eras —consistente con el hallazgo ya establecido en §7.2 de que las temáticas siguen una lógica distributiva no capturada por el perfil biográfico—, pero **crecen hacia ERA_4**, con el modelo de Morena explicando más del doble de la varianza en deviance que los tres anteriores.
+
+**Dispersión (Pearson χ²/gl):** 0.642 / 0.582 / 0.659 / 0.464 — todas **por debajo de 1**, es decir, **subdispersión** respecto al supuesto Poisson (varianza menor que la media condicional). Es el patrón inverso al prob
+----
+==== cell 183 markdown hits ['shap', 'odds ratio']
+## D.5 Síntesis y límites del Anexo D
+
+Este anexo complementa —no reemplaza— la interpretabilidad SHAP (magnitud de contribución individual) y la capa Bayesiana (incertidumbre posterior vía HDI) con el formato de tabla de regresión que la ciencia política cuantitativa espera como estándar de reporte: coeficiente, error estándar, valor *p*, IC95 %, *odds ratio*/IRR, pseudo R², prueba de razón de verosimilitud, AIC/BIC, matriz de confusión y VIF.
+
+**Hallazgo metodológico transversal:** en tres de las ocho combinaciones era×target binario (Nodal ERA_1, Nodal ERA_4, Lastre ERA_3) la MLE no ponderada produce coeficientes parcial o totalmente no estimables por separación cuasi-completa o colinealidad exacta; en una combinación adicional (Lastre ERA_4, *n*=500) el modelo colapsa por completo. En los cuatro casos, la causa es identificable y explicable —categorías dummy raras (`admin_en_sindicat
+----
+==== cell 184 markdown hits ['shap', 'logit']
+# Anexo E — Evaluación integral de los modelos LASSO Logit
+
+Módulo de validación estadística y predictiva de **todos** los modelos de
+regresión logística con penalización **LASSO (L1)** entrenados en el cuaderno
+(targets `nodal_bin` y `lastre_bin`, cuatro eras cada uno → 8 modelos).
+
+**Supuestos y reutilización de artefactos (documentados):**
+1. El *modelo LASSO canónico* es el pipeline `lr_l1_sfm()` ya entrenado y
+   almacenado en `models_nodal` / `models_lastre` (StandardScaler →
+   SelectFromModel(L1) → LogisticRegression L1). Se reutiliza sin reentrenar.
+2. El cuaderno **no** define una partición train/test fija: la evaluación
+   original es por **validación cruzada agrupada** (`StratifiedGroupKFold`
+   por `diputado_id`, para evitar fuga por reelección). Para producir métricas
+   *fuera de muestra* ("conjunto de prueba") reutilizamos esa misma estrategia
+   mediante `cross_val_predi
+----
+==== cell 185 code hits ['shap', 'logit', 'predict_proba']
+# E1  — Configuración, registro de modelos y predicciones fuera de muestra (OOF)
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import StratifiedGroupKFold, cross_val_predict
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, average_precision_score, log_loss, brier_score_loss,
+    confusion_matrix, roc_curve, precision_recall_curve, auc,
+)
+
+# --- Parámetros reproducibles (configurables) ---
+EVAL_SEED    = 42
+EVAL_K       = 5      # folds de la CV agrupada reutilizada
+BOOTSTRAP_N  = 100    # réplicas bootstrap para estabilidad de selección
+np.random.seed(EVAL_SEED)
+
+EVAL_DIR = REPORT_DIR  # reutiliza reports/eda para figuras
+EVAL_DIR.mkdir(parents=True, exist_ok=
+----
+==== cell 189 code hits ['logit']
+# E4  — Curvas ROC y Precision-Recall
+fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+_palette = plt.cm.tab10(np.linspace(0, 1, len(LASSO_MODELS)))
+for m, c in zip(LASSO_MODELS, _palette):
+    y, p = m["oof"]
+    try:
+        fpr, tpr, _ = roc_curve(y, p)
+        axes[0].plot(fpr, tpr, color=c, lw=1.8,
+                     label=f"{m['model_id']} (AUC={m['perf']['ROC_AUC']:.3f})")
+        prec, rec, _ = precision_recall_curve(y, p)
+        axes[1].plot(rec, prec, color=c, lw=1.8,
+                     label=f"{m['model_id']} (AP={m['perf']['PR_AUC']:.3f})")
+    except Exception as e:
+        _warn("curvas ROC/PR", m["model_id"], e)
+axes[0].plot([0, 1], [0, 1], "k--", lw=1, label="Azar (AUC=0.5)")
+axes[0].set_xlabel("Tasa de falsos positivos (1 - Especificidad)")
+axes[0].set_ylabel("Tasa de verdaderos positivos (Sensibilidad)")
+axes[0].set_title("Curvas ROC — modelos LASSO Logit (OOF)", fo
+----
+==== cell 191 code hits ['logit']
+# E5  — Deviance, pseudo-R² y (AIC/BIC comparables del Anexo D)
+def deviance_stats(y, p):
+    y = np.asarray(y).astype(int)
+    p = np.clip(np.asarray(p, dtype=float), 1e-15, 1 - 1e-15)
+    n = len(y); pbar = y.mean()
+    ll_model = float(np.sum(y * np.log(p) + (1 - y) * np.log(1 - p)))
+    ll_null  = float(np.sum(y * np.log(pbar) + (1 - y) * np.log(1 - pbar)))
+    resid_dev = -2 * ll_model; null_dev = -2 * ll_null
+    cox = 1 - np.exp((2.0 / n) * (ll_null - ll_model))
+    cox_max = 1 - np.exp((2.0 / n) * ll_null)
+    return dict(
+        NullDeviance=null_dev, ResidualDeviance=resid_dev,
+        DevianceReduction=(1 - resid_dev / null_dev) if null_dev != 0 else np.nan,
+        LogLikelihood=ll_model,
+        McFadden_R2=(1 - ll_model / ll_null) if ll_null != 0 else np.nan,
+        CoxSnell_R2=cox,
+        Nagelkerke_R2=(cox / cox_max) if cox_max != 0 else np.nan,
+        Tjur_R2=float(p
+----
+==== cell 193 code hits ['odds ratio', 'coef_']
+# E6  — Tablas de coeficientes y Odds Ratios (por modelo)
+def coefficient_table(model_rec):
+    """Coeficientes (escala estandarizada), |coef|, OR y % de cambio del odds.
+
+    Los coeficientes provienen del paso final `lr` del pipeline SFM; están en
+    escala de desviaciones estándar (por el StandardScaler previo), por lo que
+    el OR representa el cambio multiplicativo del odds por +1 SD de la variable.
+    """
+    lr = model_rec["model"].named_steps["lr"]
+    feats = model_rec["selected"]
+    coefs = np.asarray(lr.coef_).ravel()
+    tbl = pd.DataFrame({
+        "Variable": feats, "Coeficiente": coefs, "|Coef|": np.abs(coefs),
+        "OddsRatio": np.exp(coefs), "Cambio%Odds": (np.exp(coefs) - 1) * 100,
+    }).sort_values("|Coef|", ascending=False).reset_index(drop=True)
+    return tbl.round(4)
+
+coef_tables = {}
+for m in LASSO_MODELS:
+    tbl = coefficient_table(m)
+    coef_tables[m["
+----
+==== cell 194 code hits ['odds ratio', 'coef_']
+# E7  — Visualización de coeficientes y Odds Ratios (barras horizontales)
+def plot_coef_or(model_rec, top_n=12, ax_coef=None, ax_or=None):
+    tbl = model_rec["coef_table"].head(top_n).iloc[::-1]
+    colors = ["#c0392b" if c < 0 else "#2980b9" for c in tbl["Coeficiente"]]
+    ax_coef.barh(tbl["Variable"], tbl["Coeficiente"], color=colors)
+    ax_coef.axvline(0, color="k", lw=0.8)
+    ax_coef.set_title(f"Coeficientes — {model_rec['model_id']}", fontsize=10,
+                      fontweight="bold")
+    ax_coef.set_xlabel("Coeficiente (escala estandarizada)")
+    ax_or.barh(tbl["Variable"], tbl["OddsRatio"], color=colors)
+    ax_or.axvline(1, color="k", lw=0.8, ls="--")
+    ax_or.set_title(f"Odds Ratio — {model_rec['model_id']}", fontsize=10,
+                    fontweight="bold")
+    ax_or.set_xlabel("Odds Ratio (por +1 SD)")
+
+for tl in ["Nodal", "Lastre"]:
+    fam = [m for m in LASSO_MODE
+----
+==== cell 195 code hits ['shap']
+# E8  — SHAP (reutilizando shap_nodal / shap_lastre)
+def shap_panels(model_rec, top_n=12):
+    """Beeswarm, mean(|SHAP|) y waterfall de una observación representativa,
+    reutilizando los valores SHAP ya calculados."""
+    sv_full, X = model_rec["shap"]
+    feats = model_rec["selected"]
+    idx = [FEAT_COLS.index(f) for f in feats]
+    sv = sv_full[:, idx]
+    Xs = X.iloc[:, idx]
+    mean_abs = np.abs(sv).mean(axis=0)
+    order = np.argsort(mean_abs)[::-1][:top_n]
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+    # (1) mean(|SHAP|) — barra / summary
+    o2 = order[::-1]
+    axes[0].barh([feats[i] for i in o2], mean_abs[o2], color="#8e44ad")
+    axes[0].set_title(f"Mean(|SHAP|) — {model_rec['model_id']}", fontweight="bold")
+    axes[0].set_xlabel("Importancia media |SHAP|")
+    # (2) Beeswarm manual (dispersión coloreada por valor de la feature)
+    for rank, i in enumerate(order)
+----
+==== cell 197 code hits ['shap', 'coef_', 'predict_proba']
+# E9  — Ruta de regularización: lambda óptimo, curva CV y coefficient path
+def lasso_path_analysis(target_col, era, n_lambda=30, k=EVAL_K):
+    """Ajusta L1-LR sobre una malla de lambda (=1/C) y calcula, por CV agrupada,
+    la curva de error, el lambda óptimo, lambda 1SE, y la trayectoria de coefs."""
+    X, y = get_Xy(era, target_col)
+    groups = get_groups(era)
+    Xs = StandardScaler().fit_transform(X)
+    Cs = np.logspace(-3, 2, n_lambda)          # C = 1/lambda
+    lambdas = 1.0 / Cs
+    cv = StratifiedGroupKFold(n_splits=k, shuffle=True, random_state=EVAL_SEED)
+    mean_auc, std_auc, n_nonzero, coef_path = [], [], [], []
+    for C in Cs:
+        fold_auc = []
+        for tr, te in cv.split(Xs, y, groups):
+            lr = LogisticRegression(l1_ratio=1, solver="liblinear", C=C,
+                                    class_weight="balanced", max_iter=3000,
+                            
+----
+==== cell 199 code hits ['coef_']
+# E11  — Estabilidad de selección por Bootstrap
+def bootstrap_selection(target_col, era, B=BOOTSTRAP_N):
+    """Frecuencia de selección, media y sd de coeficientes vía B remuestreos.
+    Un coeficiente 'seleccionado' = |coef| > 1e-8 en el L1 full sobre el bootstrap."""
+    X, y = get_Xy(era, target_col)
+    Xs = StandardScaler().fit_transform(X); yv = y.values
+    n = len(yv); feats = list(X.columns)
+    counts = np.zeros(len(feats)); coef_sum = np.zeros(len(feats))
+    coef_sq = np.zeros(len(feats))
+    rng = np.random.RandomState(EVAL_SEED)
+    done = 0
+    for _ in range(B):
+        idx = rng.randint(0, n, n)
+        if len(np.unique(yv[idx])) < 2:
+            continue
+        lr = LogisticRegression(l1_ratio=1, solver="liblinear", C=0.1,
+                                class_weight="balanced", max_iter=3000,
+                                random_state=EVAL_SEED)
+        try:
+       
+----
+==== cell 201 code hits ['logit']
+# E12  — Tabla maestra + exportación CSV/Excel
+rows_master = []
+for m in LASSO_MODELS:
+    perf, stat, sp, pa = m["perf"], m["stat"], m["sparsity"], m["path"]
+    rows_master.append({
+        "Modelo": m["model_id"],
+        "Accuracy": perf["Accuracy"], "Precision": perf["Precision"],
+        "Recall": perf["Recall"], "Specificity": perf["Specificity"],
+        "F1": perf["F1"], "ROC_AUC": perf["ROC_AUC"], "PR_AUC": perf["PR_AUC"],
+        "LogLoss": perf["LogLoss"], "Brier": perf["Brier"],
+        "McFadden_R2": stat["McFadden_R2"], "Tjur_R2": stat["Tjur_R2"],
+        "NullDeviance": stat["NullDeviance"],
+        "ResidualDeviance": stat["ResidualDeviance"],
+        "DevianceReduction": stat["DevianceReduction"],
+        "VarsRetenidas": sp["retenidas"], "Sparsity_%Elim": sp["pct_elim"],
+        "Lambda_opt": pa["lambda_opt"],
+    })
+df_master = pd.DataFrame(rows_master).set_index("Mod
+----
+==== cell 202 code hits ['logit', 'odds ratio', 'coef_']
+# E13  — Interpretación automática en Markdown por modelo
+from IPython.display import Markdown
+
+def interpret_model(m):
+    perf, stat, sp, pa = m["perf"], m["stat"], m["sparsity"], m["path"]
+    ct = m["coef_table"]
+    pos = ct[ct["Coeficiente"] > 0].head(3)
+    neg = ct[ct["Coeficiente"] < 0].head(3)
+    top_or = ct.reindex(ct["OddsRatio"].sub(1).abs().sort_values(
+        ascending=False).index).head(3)
+    auc = perf["ROC_AUC"]
+    cal = ("excelente" if auc >= 0.8 else "aceptable" if auc >= 0.7
+           else "moderada" if auc >= 0.6 else "limitada")
+    def _lst(df):
+        return "; ".join(f"`{r.Variable}` (β={r.Coeficiente:+.3f}, "
+                         f"OR={r.OddsRatio:.2f})" for r in df.itertuples())
+    md = f"""
+#### Interpretación automática — {m['model_id']}
+
+**1. Calidad predictiva.** El modelo alcanza una capacidad discriminante *{cal}*
+(ROC-AUC = {auc:.3f}; PR-AUC 
+----
+==== cell 204 code hits ['poisson']
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+from copy import deepcopy
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import Dataset, DataLoader
+    from torch.cuda.amp import autocast, GradScaler
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import roc_auc_score, mean_absolute_error
+    HAS_TORCH = True
+    print("PyTorch detectado y cargado correctamente.")
+except ImportError:
+    HAS_TORCH = False
+    print("AVISO: PyTorch no está instalado en este entorno. Las celdas de Deep Learning se omitirán.")
+    print("Para ejecutar esta sección, instala PyTorch con: pip install torch")
+
+if HAS_TORCH:
+    warnings.filterwarnings("ignore")
+
+    # ── Reproducibil
+----
+==== cell 207 code hits ['shap']
+if HAS_TORCH:
+    raw = pd.read_parquet(PARQUET)
+    df  = raw.copy()
+    
+    print(f"Filas: {len(df):,}  |  Columnas: {df.shape[1]}")
+    print("\nMuestra de columnas de comisiones:")
+    com_cols = [c for c in df.columns if "comision" in c.lower()]
+    print(com_cols[:10])
+----
+==== cell 210 markdown hits ['logit', 'poisson']
+#### Interpretación — Distribución de targets
+
+| Target | Media | Tipo |
+|---|---|---|
+| `nodal_bin` | 0.423 | Binario (42.3 % positivos) |
+| `lastre_bin` | 0.453 | Binario (45.3 % positivos) |
+| `n_comisiones_tematicas` | 1.868 | Conteo (Poisson) |
+
+- **Clases moderadamente balanceadas** en ambos targets binarios (42–45 % positivos): no se requieren pesos en `BCEWithLogitsLoss` ni oversampling. Un clasificador trivial ("siempre negativo") obtendría ~57 % de accuracy, por lo que AUC es la métrica correcta.
+- **Media de comisiones temáticas = 1.87**: variable de conteo con soporte 0–∞; la elección de `PoissonNLLLoss` es adecuada.
+- **Cero nulos en los tres targets**: no hay leakage ni imputación necesaria en la variable de respuesta.
+----
+==== cell 218 code hits ['shap']
+if HAS_TORCH:
+    class CommissionDataset(Dataset):
+        """Dataset PyTorch para el modelo multitarea.
+        
+        Recibe tensores ya escalados. Targets:
+          y_nodal  : float32, shape (N,)
+          y_lastre : float32, shape (N,)
+          y_tematic: float32, shape (N,)  — conteo, sin activación en el dataset
+        """
+    
+        def __init__(self, X: np.ndarray,
+                     y_nodal: np.ndarray,
+                     y_lastre: np.ndarray,
+                     y_tematic: np.ndarray):
+            self.X        = torch.tensor(X,        dtype=torch.float32)
+            self.y_nodal  = torch.tensor(y_nodal,  dtype=torch.float32)
+            self.y_lastre = torch.tensor(y_lastre, dtype=torch.float32)
+            self.y_tematic = torch.tensor(y_tematic, dtype=torch.float32)
+    
+        def __len__(self):
+            return len(self.X)
+    
+        def __getitem__(self
+----
+==== cell 220 code hits ['shap', 'logit', 'poisson']
+if HAS_TORCH:
+    class MultiTaskCommissionModel(nn.Module):
+        """Modelo MTL con trunk compartido y tres cabezas de salida.
+    
+        Trunk: capas densas → ReLU → BatchNorm (opcional) → Dropout
+        Cabeza nodal  : logit (BCEWithLogitsLoss)
+        Cabeza lastre : logit (BCEWithLogitsLoss)
+        Cabeza temáticas: Softplus → rate para PoissonNLLLoss
+        """
+    
+        def __init__(
+            self,
+            input_dim: int,
+            hidden_sizes: list = None,
+            dropout: float = 0.3,
+            use_batchnorm: bool = True,
+        ):
+            super().__init__()
+            if hidden_sizes is None:
+                hidden_sizes = [128, 64]
+    
+            # ── Trunk compartido ─────────────────────────────────────────────────
+            trunk_layers = []
+            in_dim = input_dim
+            for h in hidden_sizes:
+                trunk_layers.app
+----
+==== cell 221 markdown hits ['logit', 'poisson']
+#### Interpretación — Arquitectura del modelo
+
+- **16 387 parámetros totales**: modelo compacto y apropiado para datasets de ~1 200–1 500 observaciones de entrenamiento. La regla empírica "al menos 10 obs por parámetro" se cumple holgadamente.
+- **Trunk compartido** (58→128→64, GELU + BatchNorm + Dropout 0.3): el aprendizaje de representaciones se comparte entre las tres tareas; las features que predicen comisiones nodales también informan las predicciones lastre y temáticas a través del trunk.
+- **GELU sobre ReLU**: activación diferenciable en cero, con mejor comportamiento en gradientes para datasets pequeños y modelos con BatchNorm.
+- **Tres cabezas independientes**: logit crudo para BCE (nodal/lastre) y Softplus→tasa para Poisson (temáticas). La independencia de cabezas permite que las pérdidas por tarea compitan durante el backprop, actuando como regularización implícita.
+----
+==== cell 223 code hits ['logit', 'poisson']
+if HAS_TORCH:
+    _bce_loss     = nn.BCEWithLogitsLoss()
+    _poisson_loss = nn.PoissonNLLLoss(log_input=False, full=False)
+    
+    
+    def joint_loss(
+        outputs: tuple,
+        targets: tuple,
+        alpha: float = LOSS_ALPHA,
+        beta:  float = LOSS_BETA,
+        gamma: float = LOSS_GAMMA,
+    ):
+        """Pérdida conjunta multitarea.
+    
+        L_total = alpha * L_BCE(nodal) + beta * L_BCE(lastre) + gamma * L_Poisson(tematicas)
+    
+        Returns
+        -------
+        loss_total, loss_nodal, loss_lastre, loss_tematic
+        """
+        out_nodal, out_lastre, out_tematic = outputs
+        y_nodal,   y_lastre,   y_tematic  = targets
+    
+        l_nodal   = _bce_loss(out_nodal,  y_nodal)
+        l_lastre  = _bce_loss(out_lastre, y_lastre)
+        l_tematic = _poisson_loss(out_tematic, y_tematic)
+    
+        l_total = alpha * l_nodal + beta * l_lastre + gamma * l_te
+----
+==== cell 227 code hits ['shap']
+if HAS_TORCH:
+    def compute_metrics(preds: dict):
+        """AUC para tareas binarias, MAE para temáticas."""
+        try:
+            auc_nodal  = roc_auc_score(preds["y_nodal"],  preds["p_nodal"])
+        except ValueError:
+            auc_nodal = np.nan
+        try:
+            auc_lastre = roc_auc_score(preds["y_lastre"], preds["p_lastre"])
+        except ValueError:
+            auc_lastre = np.nan
+    
+        mae_tematic = mean_absolute_error(preds["y_tematic"], preds["p_tematic"])
+        return auc_nodal, auc_lastre, mae_tematic
+    
+    
+    def cross_validate_era(era: str, verbose: bool = True):
+        """5-fold CV para una era. Retorna DataFrame de resultados por fold."""
+        X, y_nodal, y_lastre, y_tematic = get_era_data(era)
+        X_np = X.values
+        yn   = y_nodal.values
+        yl   = y_lastre.values
+        yt   = y_tematic.values
+    
+        # Variable comp
+----
+==== cell 229 markdown hits ['poisson']
+#### Interpretación — Resultados de entrenamiento por era
+
+#### ERA 1 — PRI (LVII–LIX)
+- **AUC nodal: 0.736 ± 0.025** → señal moderada-fuerte; el modelo captura regularidades estructurales del sistema PRI (cargos previos, trayectoria administrativa). El PRI era un sistema de asignación por seniority donde `edad_imp` es un proxy natural de jerarquía interna — MICE mejora esta señal estimando la edad faltante desde trayectoria y nivel de cargo.
+- **AUC lastre: 0.595 ± 0.029** → señal débil; el modelo no distingue bien las comisiones "lastre" en este período, posiblemente porque la asignación era más discrecional/opaca.
+- **MAE temáticas: 0.807** → error de menos de 1 comisión en promedio, aceptable para un conteo con media 1.53.
+- **~23 épocas promedio**: convergencia rápida, señal clara en los datos.
+
+#### ERA 2 — PAN (LX–LXII)
+- **AUC nodal: 0.716 ± 0.025** → ligera degradación respecto 
+----
+==== cell 237 code hits ['poisson']
+if HAS_TORCH:
+    def plot_training_history(era: str, histories: list):
+        """Pérdida conjunta e individual por época, todos los folds de una era."""
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        fig.suptitle(f"Curvas de entrenamiento — {ERA_LABELS[era]}", fontsize=13)
+    
+        metrics = [
+            ("train_joint", "val_joint",   "Pérdida conjunta"),
+            ("train_nodal", "val_nodal",   "Pérdida nodal (BCE)"),
+            ("train_lastre", "val_lastre", "Pérdida lastre (BCE)"),
+            ("train_tematic", "val_tematic", "Pérdida temáticas (Poisson)"),
+        ]
+    
+        for ax, (tr_key, val_key, title) in zip(axes.flatten(), metrics):
+            for fold_idx, hist in enumerate(histories):
+                ax.plot(hist["epoch"], hist[tr_key],  alpha=0.4, linestyle="--",
+                        color=f"C{fold_idx}")
+                ax.plot(hist["epoc
+----
+==== cell 238 markdown hits ['poisson']
+#### Interpretación — Curvas de entrenamiento
+
+- **Convergencia rápida en ERA 1 y ERA 2** (~20–27 épocas): las curvas de validación se estabilizan pronto, indicando señal aprendible con estos datos.
+- **ERA 3 y ERA 4 requieren más épocas** (29–35): el modelo necesita más iteraciones para extraer señal de datos más ruidosos o escasos.
+- **No se observa overfitting severo**: el early stopping (paciencia=15) detiene el entrenamiento antes de que la brecha train/val se amplíe significativamente. El dropout 0.3 + BatchNorm contribuyen a la regularización.
+- **Pérdida Poisson (temáticas) converge más rápido** que las pérdidas BCE en todos los folds: la estructura de conteo es más fácil de aprender que la separabilidad binaria.
+----
+==== cell 244 markdown hits ['shap']
+### 12.12. Interpretabilidad — Permutation Importance por cabeza
+
+SHAP no tiene soporte nativo para modelos MTL. Estrategia adoptada:
+**permutation importance** por tarea — se permuta cada feature y se mide la degradación de métrica
+en la cabeza correspondiente. Costoso computacionalmente; se calcula para la última era como ejemplo.
+----
+==== cell 245 code hits ['shap']
+if HAS_TORCH:
+    def permutation_importance_era(
+        era: str,
+        n_repeats: int = 5,
+        top_n: int = 20,
+    ):
+        """Permutation importance para las tres cabezas en una era.
+    
+        Entrena un modelo con todos los datos del era (sin CV) como referencia.
+        Itera sobre cada feature, permuta sus valores n_repeats veces,
+        y mide la degradación en AUC (nodal, lastre) y MAE (temáticas).
+        """
+        X, y_nodal, y_lastre, y_tematic = get_era_data(era)
+        X_np = X.values
+        yn   = y_nodal.values
+        yl   = y_lastre.values
+        yt   = y_tematic.values
+    
+        # Ajuste con todos los datos
+        scaler = StandardScaler()
+        X_sc   = scaler.fit_transform(X_np)
+    
+        # Entrenamiento de referencia (sin CV para interpretabilidad)
+        strat = (yn.astype(int) * 2 + yl.astype(int))
+        skf   = StratifiedKFold(n_spli
+----
+==== cell 254 markdown hits ['shap', 'logit', 'poisson']
+### 12.14. Notas metodológicas
+
+#### Decisiones de diseño
+
+1. **Trunk compartido con GELU + BatchNorm + Dropout**: GELU es más suave que ReLU y suele
+   generalizar mejor en datasets pequeños. BatchNorm estabiliza el gradiente en modelos profundos.
+
+2. **BCEWithLogitsLoss para tareas binarias**: numéricamente estable, combina sigmoid + BCE en un
+   solo paso. Las cabezas nodal y lastre emiten logits crudos.
+
+3. **PoissonNLLLoss para temáticas**: compatible con la naturaleza de conteo de la variable
+   (0–10). La cabeza temática emite la tasa λ directamente vía Softplus.
+
+4. **Estratificación compuesta (nodal × 2 + lastre)**: no es posible estratificar las tres
+   salidas simultáneamente con StratifiedKFold. La variable compuesta balancea las dos tareas
+   binarias. La distribución de n_comisiones_tematicas queda implícitamente balanceada por el
+   tamaño uniforme de los folds.
+
+5. **Perm
+----
+==== cell 255 markdown hits ['poisson']
+### 12.15. Conclusiones del modelo MTL
+
+#### Rendimiento general
+
+El modelo de multi-task learning (MTL) PyTorch con trunk compartido [128→64] demuestra **capacidad predictiva moderada** sobre el comportamiento legislativo mexicano, con resultados diferenciados por tarea y era política.
+
+#### Hallazgos principales
+
+**1. La tarea nodal es la más aprendible:**
+AUC nodal oscila entre 0.624 y 0.736 según la era. El perfil biográfico y de trayectoria de un diputado contiene señal real sobre su probabilidad de ocupar comisiones de alto poder. Las ERA 1 (PRI) y ERA 2 (PAN) tienen sistemas de asignación más predecibles históricamente.
+
+**2. La tarea lastre es sistemáticamente difícil:**
+AUC lastre nunca supera 0.63 en ninguna era. Las comisiones "lastre" responden a lógicas de negociación interna menos capturables con variables biográficas y de trayectoria. Features adicionales (relaciones inter
+----

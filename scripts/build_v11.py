@@ -331,6 +331,34 @@ def cv_mae_grouped(model, X, y, groups, k=5):
 
 print("Infraestructura de modelado replicada de v10 — OK")"""))
 
+cells.append(code(r"""# ============================================================
+# VERIFICACION de acciones correctivas (AC1 + AC2)
+# Mide el antes/después sobre el modelo productivo LR-L1.
+# ============================================================
+_REDUND = ["univ_extranjera", "n_cargos_legislativos_prev"]  # eliminadas por AC1
+_rows = []
+for _t in ["nodal_bin", "lastre_bin"]:
+    for _era in ERA_ORDER:
+        try:
+            _X, _y = get_Xy(_era, _t)
+            _g = get_groups(_era)
+            _mask = df_enc["era"] == _era
+            _extra = [c for c in _REDUND if c in df_enc.columns and c not in _X.columns]
+            _X_old = pd.concat([_X, df_enc.loc[_mask, _extra].astype(float).reset_index(drop=True)], axis=1)
+            auc_clean, _ = cv_auc(lr_binary(), _X, _y)
+            auc_redun, _ = cv_auc(lr_binary(), _X_old, _y)
+            auc_group, _ = cv_auc_grouped(lr_binary(), _X, _y, _g)
+            _rows.append({"target": _t, "era": _era,
+                          "AUC pre-AC1": round(auc_redun, 4),
+                          "AUC post-AC1": round(auc_clean, 4),
+                          "D AC1": round(auc_clean - auc_redun, 4),
+                          "AUC AC2 (GroupKFold)": round(auc_group, 4),
+                          "D AC2": round(auc_group - auc_clean, 4)})
+        except Exception as _e:
+            _rows.append({"target": _t, "era": _era, "error": str(_e)})
+print(f"FEAT_COLS depurado: {len(FEAT_COLS)} features (AC1 elimino 2 redundantes)")
+df_ac = pd.DataFrame(_rows); df_ac"""))
+
 cells.append(md(r"""### 0.1 Línea base: reproducción de la Tabla 7 de la tesis
 
 Antes de estimar los modelos nuevos, reproducimos las cifras de referencia de v10 (AUC de membresía nodal y lastre, pipeline `LR L1 + SFM`, *k*=5). Esta tabla es la vara contra la que se comparan todos los modelos alternativos de las secciones siguientes; si la réplica es fiel, las comparaciones son válidas."""))
@@ -425,7 +453,7 @@ for e in ERA_ORDER:
     Xp, yp = get_Xy(e, "pres_bin", FEAT_COLS_PRES)
     box_data.append(cv_auc_scores(lr_l1_sfm(), Xp, yp, k=5, n_repeats=5))
     box_lab.append(ERA_LABELS[e]); box_col.append(ERA_COLORS[e])
-bp = axB.boxplot(box_data, labels=box_lab, patch_artist=True, showmeans=True)
+bp = axB.boxplot(box_data, tick_labels=box_lab, patch_artist=True, showmeans=True)
 for patch, c in zip(bp["boxes"], box_col):
     patch.set_facecolor(c); patch.set_alpha(0.55)
 axB.axhline(0.5, color="gray", ls=":", lw=1)
